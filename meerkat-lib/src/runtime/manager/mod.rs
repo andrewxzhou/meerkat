@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use tokio::sync::oneshot;
 use super::ast::{Value, Decl, Expr, ActionStmt};
 use super::interpreter::{eval, EvalContext, EvalError, execute, ExecuteEffect};
 use super::semantic_analysis::var_analysis::{calc_dep_srv, DependAnalysis};
@@ -18,6 +19,8 @@ pub struct Manager {
     pub remote_services: HashMap<String, Address>,
     /// Network actor for distributed communication
     pub network: Option<NetworkActor>,
+    /// Pending reply channels keyed by request_id
+    pub pending_replies: HashMap<u64, oneshot::Sender<MeerkatMessage>>,
 }
 
 impl Manager {
@@ -26,6 +29,7 @@ impl Manager {
             services: HashMap::new(),
             remote_services: HashMap::new(),
             network: None,
+            pending_replies: HashMap::new(),
         }
     }
 
@@ -155,6 +159,34 @@ impl Manager {
     }
 
 
+    /// Drain all pending network events and dispatch each to the matching
+    /// oneshot channel in pending_replies. Non-matching events are dropped.
+    pub fn dispatch_network_events(&mut self) {
+        loop {
+            let event = match self.network.as_mut() {
+                Some(n) => n.try_recv_event(),
+                None => break,
+            };
+            match event {
+                Some(NetworkEvent::MessageReceived { msg, .. }) => {
+                    let rid = match &msg {
+                        MeerkatMessage::LookupResponse { request_id, .. } => Some(*request_id),
+                        MeerkatMessage::LookupError { request_id, .. } => Some(*request_id),
+                        MeerkatMessage::ActionResponse { request_id, .. } => Some(*request_id),
+                        _ => None,
+                    };
+                    if let Some(id) = rid {
+                        if let Some(tx) = self.pending_replies.remove(&id) {
+                            let _ = tx.send(msg);
+                        }
+                    }
+                }
+                Some(_) => {}
+                None => break,
+            }
+        }
+    }
+
     /// Get the network address for a remote service (strips the slug)
     fn remote_addr(&self, service: &str) -> Result<Address, EvalError> {
         let full_url = self.remote_services.get(service)
@@ -217,33 +249,36 @@ impl Manager {
 
         net.handle_command(NetworkCommand::SendMessage { addr, msg }).await;
 
-        // Poll for response with timeout
-        let start = std::time::Instant::now();
+        // Create oneshot channel and register it
+        let (tx, mut rx) = oneshot::channel::<MeerkatMessage>();
+        self.pending_replies.insert(request_id, tx);
+
+        // Await reply with timeout, dispatching network events each iteration
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(15);
         loop {
-            if start.elapsed().as_secs() > 15 {
+            if tokio::time::Instant::now() >= deadline {
+                self.pending_replies.remove(&request_id);
                 return Err(EvalError::NetworkError(format!(
                     "Timeout waiting for remote lookup of {}.{}", service, member
                 )));
             }
-            let net = self.network.as_mut().unwrap();
-            if let Some(event) = net.try_recv_event() {
-                match event {
-                    NetworkEvent::MessageReceived {
-                        msg: MeerkatMessage::LookupResponse { request_id: rid, value }, ..
-                    } if rid == request_id => {
-                        let val: Value = serde_json::from_str(&value)
-                            .map_err(|e| EvalError::NetworkError(e.to_string()))?;
-                        return Ok(val);
-                    }
-                    NetworkEvent::MessageReceived {
-                        msg: MeerkatMessage::LookupError { request_id: rid, error }, ..
-                    } if rid == request_id => {
-                        return Err(EvalError::LookupError(error));
-                    }
-                    _ => {}
+            self.dispatch_network_events();
+            match rx.try_recv() {
+                Ok(MeerkatMessage::LookupResponse { value, .. }) => {
+                    let val: Value = serde_json::from_str(&value)
+                        .map_err(|e| EvalError::NetworkError(e.to_string()))?;
+                    return Ok(val);
+                }
+                Ok(MeerkatMessage::LookupError { error, .. }) => {
+                    return Err(EvalError::LookupError(error));
+                }
+                Ok(_) => {}
+                Err(oneshot::error::TryRecvError::Empty) => {}
+                Err(oneshot::error::TryRecvError::Closed) => {
+                    return Err(EvalError::NetworkError("Reply channel closed".to_string()));
                 }
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         }
     }
 
@@ -268,32 +303,37 @@ impl Manager {
 
         net.handle_command(NetworkCommand::SendMessage { addr, msg }).await;
 
-        // Wait for response
-        let start = std::time::Instant::now();
+        // Create oneshot channel and register it
+        let (tx, mut rx) = oneshot::channel::<MeerkatMessage>();
+        self.pending_replies.insert(request_id, tx);
+
+        // Await reply with timeout, dispatching network events each iteration
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(15);
         loop {
-            if start.elapsed().as_secs() > 15 {
+            if tokio::time::Instant::now() >= deadline {
+                self.pending_replies.remove(&request_id);
                 return Err(EvalError::NetworkError(format!(
                     "Timeout waiting for remote action on service '{}'", service
                 )));
             }
-            let net = self.network.as_mut().unwrap();
-            if let Some(event) = net.try_recv_event() {
-                match event {
-                    NetworkEvent::MessageReceived {
-                        msg: MeerkatMessage::ActionResponse { request_id: rid, success, error }, ..
-                    } if rid == request_id => {
-                        if success {
-                            return Ok(());
-                        } else {
-                            return Err(EvalError::NetworkError(
-                                error.unwrap_or_else(|| "Remote action failed".to_string())
-                            ));
-                        }
+            self.dispatch_network_events();
+            match rx.try_recv() {
+                Ok(MeerkatMessage::ActionResponse { success, error, .. }) => {
+                    if success {
+                        return Ok(());
+                    } else {
+                        return Err(EvalError::NetworkError(
+                            error.unwrap_or_else(|| "Remote action failed".to_string())
+                        ));
                     }
-                    _ => {}
+                }
+                Ok(_) => {}
+                Err(oneshot::error::TryRecvError::Empty) => {}
+                Err(oneshot::error::TryRecvError::Closed) => {
+                    return Err(EvalError::NetworkError("Reply channel closed".to_string()));
                 }
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         }
     }
 
