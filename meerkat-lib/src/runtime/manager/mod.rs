@@ -412,6 +412,7 @@ impl Manager {
             .unwrap_or_default();
 
         // Write vars: Assign targets that are service vars
+        // TODO: also include ActionStmt::Insert targets once Insert is implemented
         let write_vars: HashSet<String> = stmts.iter()
             .filter_map(|stmt| match stmt {
                 ActionStmt::Assign { var, .. } if service_vars.contains(var) => Some(var.clone()),
