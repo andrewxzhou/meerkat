@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 meerkat-lib = { path = "../meerkat-lib" }
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["sync", "macros", "io-util", "rt", "time"] }
 log = "0.4"
 env_logger = "0.10"
 serde_json = "1"

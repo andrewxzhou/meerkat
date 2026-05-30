@@ -14,7 +14,7 @@ serde_json = "1.0.61"
 strum_macros = "0.25.3"
 lalrpop-util = { version = "0.20.2", features = ["lexer", "unicode"] }
 kameo = "0.16"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["sync", "macros", "io-util", "rt", "time"] }
 json = "0.12.4"
 futures = "0.3"
 dashmap = "5"
