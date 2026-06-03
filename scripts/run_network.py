@@ -12,7 +12,7 @@ Usage:
   python3 scripts/run_network.py [manifest_file_path]
 
 Default manifest:
-  scripts/default_manifest.txt
+  scripts/default_manifest.mkn
 """
 
 import os
@@ -24,8 +24,7 @@ import re
 import shutil
 import atexit
 
-# Enable loopback-only local bindings by default
-os.environ["MEERKAT_LOCAL"] = "1"
+# Run local loopback-only bindings by default via command line flags
 
 LOG_DIR = os.path.join("tmp", "logs")
 processes = []
@@ -64,11 +63,11 @@ def main():
     global processes
 
     # Parse arguments
-    manifest_path = "scripts/default_manifest.txt"
+    manifest_path = "scripts/default_manifest.mkn"
     if len(sys.argv) > 1:
         if sys.argv[1] in ("-h", "--help"):
             print("Usage: python3 scripts/run_network.py [manifest_file_path]")
-            print("Default manifest: scripts/default_manifest.txt")
+            print("Default manifest: scripts/default_manifest.mkn")
             sys.exit(0)
         manifest_path = sys.argv[1]
 
@@ -86,7 +85,7 @@ def main():
     print("===================================================")
     print(f"Using manifest: {manifest_path}")
     print(f"Logs will be written to: {LOG_DIR}/")
-    print("Offline/loopback mode is active (MEERKAT_LOCAL=1)")
+    print("Offline/loopback mode is active (--local flag enabled)")
     print("---------------------------------------------------")
 
     # Read manifest nodes
@@ -131,7 +130,7 @@ def main():
         if port.lower() == "client":
             # Client Node (runs in foreground)
             print(f"[{node_name}] Starting client node running '{file_path}'...")
-            cmd = ["./target/debug/meerkat", "-f", file_path] + import_flags
+            cmd = ["cargo", "run", "-p", "meerkat", "--", "--local", "-f", file_path] + import_flags
             print(f"Executing: {' '.join(cmd)}")
             print("---------------------------------------------------")
             
@@ -146,7 +145,7 @@ def main():
         else:
             # Server Node (runs in background)
             print(f"[{node_name}] Starting server node on port {port} running '{file_path}'...")
-            cmd = ["./target/debug/meerkat", "-s", "-f", file_path, "-p", port] + import_flags
+            cmd = ["cargo", "run", "-p", "meerkat", "--", "--local", "-s", "-f", file_path, "-p", port] + import_flags
             
             log_file = open(log_file_path, "w")
             proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT, text=True)

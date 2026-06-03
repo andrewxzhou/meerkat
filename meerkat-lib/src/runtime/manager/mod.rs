@@ -24,6 +24,8 @@ pub struct Manager {
     pub network: Option<NetworkActor>,
     /// Pending reply channels keyed by request_id
     pub pending_replies: HashMap<u64, oneshot::Sender<MeerkatMessage>>,
+    /// Enable local loopback mode
+    pub local: bool,
 }
 
 impl Manager {
@@ -33,6 +35,7 @@ impl Manager {
             remote_services: HashMap::new(),
             network: None,
             pending_replies: HashMap::new(),
+            local: false,
         }
     }
 
@@ -253,13 +256,13 @@ impl Manager {
         };
         let peer_id = net.local_peer_id();
         let reply = net.handle_command(NetworkCommand::GetLocalAddresses).await;
-        let public_ip = Self::get_public_ip();
+        let node_ip = self.get_node_ip();
         match reply {
             crate::net::NetworkReply::LocalAddresses { addrs } => {
                 if let Some(addr) = addrs.first() {
                     let addr_str = addr.0
-                        .replace("0.0.0.0", &public_ip)
-                        .replace("127.0.0.1", &public_ip);
+                        .replace("0.0.0.0", &node_ip)
+                        .replace("127.0.0.1", &node_ip);
                     format!("{}/p2p/{}", addr_str, peer_id)
                 } else {
                     String::new()
@@ -269,8 +272,11 @@ impl Manager {
         }
     }
 
-    /// Get the local machine's outbound IP address (non-loopback)
-    pub fn get_public_ip() -> String {
+    /// Get the local machine's outbound IP address (non-loopback) or loopback fallback
+    pub fn get_node_ip(&self) -> String {
+        if self.local {
+            return "127.0.0.1".to_string();
+        }
         use std::net::UdpSocket;
         UdpSocket::bind("0.0.0.0:0")
             .and_then(|s| { s.connect("8.8.8.8:80")?; s.local_addr() })
