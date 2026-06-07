@@ -274,7 +274,7 @@ class NetworkOrchestrator:
         self.nodes_by_peer_id = {} # Dict[peer_id, Node]
         
         # Session config
-        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"
         self.log_dir = os.path.join("tmp", "logs")
         self.log_dir_session = os.path.join(self.log_dir, "mkn", self.session_id)
         
