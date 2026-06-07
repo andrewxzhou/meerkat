@@ -4,6 +4,16 @@ import sys
 import re
 
 def run_cmd(args, timeout=30):
+    """Runs a subprocess command with a timeout.
+
+    Args:
+        args: A list of program arguments to execute.
+        timeout: Maximum duration in seconds to wait for execution.
+
+    Returns:
+        A tuple of (returncode, stdout, stderr). On timeout, returncode is -1
+        and stdout/stderr contain any output captured before termination.
+    """
     try:
         proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
         return proc.returncode, proc.stdout, proc.stderr
@@ -12,6 +22,7 @@ def run_cmd(args, timeout=30):
         return -1, (e.stdout or b"").decode(errors="replace"), (e.stderr or b"").decode(errors="replace")
 
 def run_basic_test():
+    """Runs integration test 1 (mkn_basic_topology) to verify a basic orchestrator setup."""
     print("Running Test 1: mkn_basic_topology...")
     code, stdout, stderr = run_cmd([
         sys.executable, "scripts/mkn.py", "meerkat/tests/mkn/test_mkn_basic.json"
@@ -35,6 +46,7 @@ def run_basic_test():
     return True
 
 def run_namespace_split_test():
+    """Runs integration test 2 (mkn_namespace_split) to verify three-namespace tracking and gateway routing."""
     print("\nRunning Test 2: mkn_namespace_split...")
     code, stdout, stderr = run_cmd([
         sys.executable, "scripts/mkn.py", "meerkat/tests/mkn/test_mkn_gateway.json", "--dump-state"
@@ -98,6 +110,7 @@ def run_namespace_split_test():
     return True
 
 def run_validation_failure_test():
+    """Runs integration test 3 (mkn_validation_failure) to check 15 error edge cases in manifest validation."""
     print("\nRunning Test 3: mkn_validation_failure...")
     
     test_cases = [
@@ -138,6 +151,7 @@ def run_validation_failure_test():
     return True
 
 def main():
+    """Main entry point to execute the integration test suite and exit with appropriate code."""
     success = True
     success &= run_basic_test()
     success &= run_namespace_split_test()
