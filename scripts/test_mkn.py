@@ -154,12 +154,42 @@ def run_validation_failure_test():
     print("\nPASS: mkn_validation_failure (All 15 edge cases checked)")
     return True
 
+def run_client_timeout_test():
+    """Runs integration tests to verify client startup and execution timeout logic."""
+    print("\nRunning Test 4: client startup and execution timeouts...")
+    
+    # 1. Verify slow client (exceeds startup timeout but within execution timeout) succeeds.
+    code, output = run_cmd([
+        sys.executable, "scripts/mkn.py", "meerkat/tests/mkn/test_mkn_client_slow.json"
+    ])
+    print(output)
+    if code != 0:
+        print("FAIL: Slow client test failed, exited with code", code)
+        return False
+    print("PASS: Slow client test (bypassed startup timeout successfully)")
+
+    # 2. Verify hanging client (exceeds execution timeout) fails with TimeoutError.
+    code, output = run_cmd([
+        sys.executable, "scripts/mkn.py", "meerkat/tests/mkn/test_mkn_client_exec_timeout.json"
+    ])
+    print(output)
+    if code == 0:
+        print("FAIL: Hanging client test exited with 0, expected timeout failure")
+        return False
+    if "execution timed out" not in output:
+        print("FAIL: Expected client execution timeout error in output")
+        return False
+    print("PASS: Hanging client test (terminated by execution timeout successfully)")
+    
+    return True
+
 def main():
     """Main entry point to execute the integration test suite and exit with appropriate code."""
     success = True
     success &= run_basic_test()
     success &= run_namespace_split_test()
     success &= run_validation_failure_test()
+    success &= run_client_timeout_test()
     
     if success:
         print("\nALL INTEGRATION TESTS PASSED SUCCESSFULLY! ✓")

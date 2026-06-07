@@ -299,6 +299,16 @@ class NetworkOrchestrator:
             node.log_path = os.path.join(self.log_dir_session, log_dir_type, f"{node.alias}.log")
             self.nodes_by_alias[alias] = node
 
+        # Precalculate the set of dependent node aliases to optimize dependency checks.
+        # This optimizes the _is_node_dependency lookup from O(N * M) to O(1) amortized time,
+        # where N is the number of nodes and M is the maximum imports per node.
+        self.dependency_aliases = set()
+        for node_def in manifest.nodes_by_alias.values():
+            if "gateway" in node_def and node_def["gateway"]:
+                self.dependency_aliases.add(node_def["gateway"])
+            for imp in node_def.get("imports", []):
+                self.dependency_aliases.add(imp.split('.')[0])
+
     def _reader_thread_func(self, node):
         """
         Thread target function. Reads lines from a node's stdout stream, writes
@@ -469,6 +479,24 @@ class NetworkOrchestrator:
             except queue.Empty:
                 break
 
+    def _is_node_dependency(self, node):
+        """
+        Determines if any other node in the network depends on the given node
+        either as a gateway or via service imports.
+        
+        This check uses a precalculated set of dependency aliases computed
+        during initialization. This optimizes the query from a nested graph search
+        of O(N * M) time complexity down to a simple set lookup of O(1) time complexity,
+        where N is the number of nodes and M is the maximum imports per node.
+        
+        Args:
+            node: The Node instance to check.
+            
+        Returns:
+            True if the node is depended upon by another node, otherwise False.
+        """
+        return node.alias in self.dependency_aliases
+
     def check_nodes_status(self):
         """
         Inspects process exit codes, monitors client execution timeouts,
@@ -500,7 +528,7 @@ class NetworkOrchestrator:
                     self.dump_node_log(node)
                     
             # B. Check for startup timeout
-            elif not node.is_online:
+            elif not node.is_online and (node.type == "server" or self._is_node_dependency(node)):
                 if now - node.start_time > self.startup_timeout:
                     print(f"\nError: Timeout waiting for node '{node.alias}' to initialize after {self.startup_timeout} seconds.")
                     self.dump_node_log(node)
