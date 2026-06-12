@@ -1065,9 +1065,13 @@ impl Manager {
     }
 
     /// Participant side: apply and release a held transaction on Commit.
-    pub async fn commit_participant(&mut self, tid: &TxnId) -> Result<(), EvalError> {
+    pub async fn commit_participant(
+        &mut self,
+        tid: &TxnId,
+    ) -> Result<HashSet<(ServiceId, String)>, EvalError> {
         if let Some(txn) = self.pending_txns.remove(tid) {
             // The originator decided to commit, so applying is infallible.
+            let freed = txn.locked.clone();
             self.apply_committed_writes(&txn).await;
             self.release_locks(&txn.locked, &txn.id);
             // Forward the commit down the chain to any sub-participants this node
@@ -1081,21 +1085,25 @@ impl Manager {
             }
             match forward_err {
                 Some(e) => Err(e),
-                None => Ok(()),
+                None => Ok(freed),
             }
         } else {
-            Ok(())
+            Ok(HashSet::new())
         }
     }
 
     /// Participant side: discard and release a held transaction on Abort, and
     /// forward the abort down the chain to any sub-participants.
-    pub async fn abort_participant(&mut self, tid: &TxnId) {
+    pub async fn abort_participant(&mut self, tid: &TxnId) -> HashSet<(ServiceId, String)> {
         if let Some(txn) = self.pending_txns.remove(tid) {
+            let freed = txn.locked.clone();
             self.release_locks(&txn.locked, &txn.id);
             for addr in txn.participants.iter().cloned().collect::<Vec<_>>() {
                 self.send_abort(addr, tid).await;
             }
+            freed
+        } else {
+            HashSet::new()
         }
     }
 
