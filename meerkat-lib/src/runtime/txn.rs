@@ -233,6 +233,35 @@ impl Transaction {
     }
 }
 
+/// Outcome of a wait-die conflict check. The requesting transaction either
+/// waits for the lock (it is older / higher priority than every conflicting
+/// holder) or dies and retries (some current holder is older).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitDie {
+    Wait,
+    Die,
+}
+
+impl VarLock {
+    /// Wait-die decision for a `requester` that conflicts with this lock.
+    /// Returns `Die` if any current holder is strictly older (smaller tid,
+    /// higher priority) than the requester; otherwise `Wait`. A holder equal
+    /// to the requester is ignored, since a transaction never conflicts with
+    /// itself.
+    pub fn wait_die(&self, requester: &TxnId) -> WaitDie {
+        let holder_older = match self {
+            VarLock::Unlocked => false,
+            VarLock::WriteLocked(owner) => owner != requester && owner < requester,
+            VarLock::ReadLocked(readers) => readers.iter().any(|h| h != requester && h < requester),
+        };
+        if holder_older {
+            WaitDie::Die
+        } else {
+            WaitDie::Wait
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,5 +449,71 @@ mod tests {
         assert!(!lock.upgrade_to_write(&wrong_txn));
 
         assert_writer(&lock, &owner);
+    }
+}
+
+#[cfg(test)]
+mod wait_die_tests {
+    use super::*;
+
+    fn tid(ts: u128, node: u64) -> TxnId {
+        TxnId {
+            timestamp: ts,
+            node_id: node,
+            iteration: 0,
+        }
+    }
+
+    #[test]
+    fn older_requester_waits_on_write_lock() {
+        let lock = VarLock::WriteLocked(tid(20, 1)); // younger holder
+        assert_eq!(lock.wait_die(&tid(10, 1)), WaitDie::Wait);
+    }
+
+    #[test]
+    fn younger_requester_dies_on_write_lock() {
+        let lock = VarLock::WriteLocked(tid(10, 1)); // older holder
+        assert_eq!(lock.wait_die(&tid(20, 1)), WaitDie::Die);
+    }
+
+    #[test]
+    fn older_than_all_readers_waits() {
+        let mut readers = std::collections::HashSet::new();
+        readers.insert(tid(20, 1));
+        readers.insert(tid(30, 1));
+        let lock = VarLock::ReadLocked(readers);
+        assert_eq!(lock.wait_die(&tid(10, 1)), WaitDie::Wait);
+    }
+
+    #[test]
+    fn younger_than_some_reader_dies() {
+        let mut readers = std::collections::HashSet::new();
+        readers.insert(tid(10, 1)); // older than requester
+        readers.insert(tid(30, 1));
+        let lock = VarLock::ReadLocked(readers);
+        assert_eq!(lock.wait_die(&tid(20, 1)), WaitDie::Die);
+    }
+
+    #[test]
+    fn node_id_breaks_ties_smaller_is_older() {
+        // same timestamp: smaller node_id is older (higher priority)
+        assert_eq!(
+            VarLock::WriteLocked(tid(10, 1)).wait_die(&tid(10, 2)),
+            WaitDie::Die
+        );
+        assert_eq!(
+            VarLock::WriteLocked(tid(10, 2)).wait_die(&tid(10, 1)),
+            WaitDie::Wait
+        );
+    }
+
+    #[test]
+    fn requester_in_reader_set_is_not_a_self_conflict() {
+        let me = tid(10, 1);
+        let mut readers = std::collections::HashSet::new();
+        readers.insert(me.clone());
+        readers.insert(tid(20, 1)); // younger other reader
+        let lock = VarLock::ReadLocked(readers);
+        assert_eq!(lock.wait_die(&me), WaitDie::Wait);
     }
 }
