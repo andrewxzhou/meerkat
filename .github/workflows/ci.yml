@@ -19,6 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions: {}
+    env:
+      RUSTFLAGS: "-D warnings"
     steps:
       # Monitors outbound network calls and can enforce egress policy. Audit mode
       # records unexpected traffic without blocking while CI hardening is tuned.
