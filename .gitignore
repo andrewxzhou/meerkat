@@ -35,4 +35,4 @@ __pycache__/
 *.pyd
 
 # REPL history files
-.meerkat_history
+.meerkat_history.txt
