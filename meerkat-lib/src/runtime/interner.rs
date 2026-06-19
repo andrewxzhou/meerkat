@@ -6,8 +6,6 @@
 //! This implementation intentionally copies strings to avoid viral
 //! lifetime annotations
 
-use serde::Deserialize;
-use serde::Serialize;
 use std::collections::HashMap;
 
 /// A numeric representation of an identifier or symbol
@@ -75,47 +73,6 @@ impl Symbol {
     ///     `Self`: The default empty `Symbol`
     pub const fn empty() -> Self {
         Symbol { id: 0 }
-    }
-}
-
-/// Implement the `Serialize` trait for the `Symbol` struct
-///
-/// This serializes the symbol as a single `u32` value to maintain
-/// compatibility with the network representation of symbols
-impl Serialize for Symbol {
-    /// Serialize the symbol into a raw `u32` value
-    ///
-    /// Args:
-    ///     `serializer` (`S`): The serializer target
-    ///
-    /// Returns:
-    ///     `Result<S::Ok, S::Error>`: The serialization result
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        self.id.serialize(serializer)
-    }
-}
-
-/// Implement the `Deserialize` trait for the `Symbol` struct
-///
-/// This deserializes the symbol from a single `u32` value to maintain
-/// compatibility with the network representation of symbols
-impl<'de> Deserialize<'de> for Symbol {
-    /// Deserialize the symbol from a raw `u32` value
-    ///
-    /// Args:
-    ///     `deserializer` (`D`): The deserializer source
-    ///
-    /// Returns:
-    ///     `Result<Self, D::Error>`: The deserialized symbol instance
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let id = u32::deserialize(deserializer)?;
-        Ok(Symbol { id })
     }
 }
 
@@ -189,23 +146,6 @@ impl Interner {
     pub fn get(&self, id: Symbol) -> &str {
         let idx = id.id as usize;
         self.strings.get(idx).map(|s| s.as_str()).unwrap_or("")
-    }
-
-    /// Exposes validation check for a symbol
-    ///
-    /// Checks if a raw symbol `id` is valid within this `Interner`
-    ///
-    /// Args:
-    ///     `id` (`u32`): The raw ID to check
-    ///
-    /// Returns:
-    ///     `Option<Symbol>`: The validated symbol, or `None` if invalid
-    pub fn get_symbol(&self, id: u32) -> Option<Symbol> {
-        if id < self.next_id {
-            Some(Symbol { id })
-        } else {
-            None
-        }
     }
 }
 

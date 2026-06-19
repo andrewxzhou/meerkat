@@ -3,8 +3,8 @@
 //! Provides encoding and decoding functions to map between the native
 //! `AST` types and the serialized network representation variants
 
-use crate::net::ast::{NetActionStmt, NetExpr, NetField, NetValue};
-use crate::runtime::ast::{ActionStmt, Expr, Field, Value};
+use crate::net::ast::{NetActionStmt, NetBinOp, NetDataType, NetExpr, NetField, NetUnOp, NetValue};
+use crate::runtime::ast::{ActionStmt, BinOp, DataType, Expr, Field, UnOp, Value};
 use crate::runtime::interner::Interner;
 
 /// Encode a runtime `Value` into a network representation
@@ -144,11 +144,11 @@ pub fn encode_expr(expr: &Expr, interner: &Interner) -> NetExpr {
             value: Box::new(encode_expr(value, interner)),
         },
         Expr::Unop { op, expr } => NetExpr::Unop {
-            op: *op,
+            op: encode_unop(*op),
             expr: Box::new(encode_expr(expr, interner)),
         },
         Expr::Binop { op, expr1, expr2 } => NetExpr::Binop {
-            op: *op,
+            op: encode_binop(*op),
             expr1: Box::new(encode_expr(expr1, interner)),
             expr2: Box::new(encode_expr(expr2, interner)),
         },
@@ -235,11 +235,11 @@ pub fn decode_expr(expr: NetExpr, interner: &mut Interner) -> Expr {
             value: Box::new(decode_expr(*value, interner)),
         },
         NetExpr::Unop { op, expr } => Expr::Unop {
-            op,
+            op: decode_unop(op),
             expr: Box::new(decode_expr(*expr, interner)),
         },
         NetExpr::Binop { op, expr1, expr2 } => Expr::Binop {
-            op,
+            op: decode_binop(op),
             expr1: Box::new(decode_expr(*expr1, interner)),
             expr2: Box::new(decode_expr(*expr2, interner)),
         },
@@ -372,7 +372,7 @@ pub fn decode_action_stmt(stmt: NetActionStmt, interner: &mut Interner) -> Actio
 pub fn encode_field(field: &Field, interner: &Interner) -> NetField {
     NetField {
         name: interner.get(field.name).to_string(),
-        type_: field.type_.clone(),
+        type_: encode_datatype(&field.type_),
     }
 }
 
@@ -387,7 +387,107 @@ pub fn encode_field(field: &Field, interner: &Interner) -> NetField {
 pub fn decode_field(field: NetField, interner: &mut Interner) -> Field {
     Field {
         name: interner.insert(&field.name),
-        type_: field.type_,
+        type_: decode_datatype(field.type_),
+    }
+}
+
+/// Encode a runtime `UnOp` into its network equivalent
+///
+/// Args:
+///     op (`UnOp`): The runtime operator to encode
+///
+/// Returns:
+///     `NetUnOp`: The encoded network operator representation
+pub fn encode_unop(op: UnOp) -> NetUnOp {
+    match op {
+        UnOp::Neg => NetUnOp::Neg,
+        UnOp::Not => NetUnOp::Not,
+    }
+}
+
+/// Decode a network `NetUnOp` into its runtime equivalent
+///
+/// Args:
+///     op (`NetUnOp`): The network operator to decode
+///
+/// Returns:
+///     `UnOp`: The decoded runtime operator representation
+pub fn decode_unop(op: NetUnOp) -> UnOp {
+    match op {
+        NetUnOp::Neg => UnOp::Neg,
+        NetUnOp::Not => UnOp::Not,
+    }
+}
+
+/// Encode a runtime `BinOp` into its network equivalent
+///
+/// Args:
+///     op (`BinOp`): The runtime operator to encode
+///
+/// Returns:
+///     `NetBinOp`: The encoded network operator representation
+pub fn encode_binop(op: BinOp) -> NetBinOp {
+    match op {
+        BinOp::Add => NetBinOp::Add,
+        BinOp::Sub => NetBinOp::Sub,
+        BinOp::Mul => NetBinOp::Mul,
+        BinOp::Div => NetBinOp::Div,
+        BinOp::Eq => NetBinOp::Eq,
+        BinOp::Lt => NetBinOp::Lt,
+        BinOp::Gt => NetBinOp::Gt,
+        BinOp::And => NetBinOp::And,
+        BinOp::Or => NetBinOp::Or,
+    }
+}
+
+/// Decode a network `NetBinOp` into its runtime equivalent
+///
+/// Args:
+///     op (`NetBinOp`): The network operator to decode
+///
+/// Returns:
+///     `BinOp`: The decoded runtime operator representation
+pub fn decode_binop(op: NetBinOp) -> BinOp {
+    match op {
+        NetBinOp::Add => BinOp::Add,
+        NetBinOp::Sub => BinOp::Sub,
+        NetBinOp::Mul => BinOp::Mul,
+        NetBinOp::Div => BinOp::Div,
+        NetBinOp::Eq => BinOp::Eq,
+        NetBinOp::Lt => BinOp::Lt,
+        NetBinOp::Gt => BinOp::Gt,
+        NetBinOp::And => BinOp::And,
+        NetBinOp::Or => BinOp::Or,
+    }
+}
+
+/// Encode a runtime `DataType` into its network equivalent
+///
+/// Args:
+///     t (`&DataType`): The runtime data type to encode
+///
+/// Returns:
+///     `NetDataType`: The encoded network data type representation
+pub fn encode_datatype(t: &DataType) -> NetDataType {
+    match t {
+        DataType::String => NetDataType::String,
+        DataType::Number => NetDataType::Number,
+        DataType::Bool => NetDataType::Bool,
+    }
+}
+
+/// Decode a network `NetDataType` into its runtime equivalent
+///
+/// Args:
+///     t (`NetDataType`): The network data type to decode
+///
+/// Returns:
+///     `DataType`: The decoded runtime data type representation
+pub fn decode_datatype(t: NetDataType) -> DataType {
+    match t {
+        NetDataType::String => DataType::String,
+        NetDataType::Number => DataType::Number,
+        NetDataType::Bool => DataType::Bool,
     }
 }
 

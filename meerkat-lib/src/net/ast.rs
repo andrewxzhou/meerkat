@@ -4,7 +4,6 @@
 //! types, substituting `Symbol` identifiers with raw `String` names
 
 use crate::net::ServiceNetId;
-use crate::runtime::ast::{BinOp, DataType, UnOp};
 use serde::{Deserialize, Serialize};
 
 /// Network representation of a field definition
@@ -12,8 +11,8 @@ use serde::{Deserialize, Serialize};
 pub struct NetField {
     /// The name of the field
     pub name: String,
-    /// The `DataType` of the field
-    pub type_: DataType,
+    /// The `NetDataType` of the field
+    pub type_: NetDataType,
 }
 
 /// Network representation of an action statement
@@ -115,15 +114,15 @@ pub enum NetExpr {
     },
     /// Unary operator application
     Unop {
-        /// The `UnOp` operator
-        op: UnOp,
+        /// The `NetUnOp` operator
+        op: NetUnOp,
         /// The operand expression
         expr: Box<NetExpr>,
     },
     /// Binary operator application
     Binop {
-        /// The `BinOp` operator
-        op: BinOp,
+        /// The `NetBinOp` operator
+        op: NetBinOp,
         /// The first operand
         expr1: Box<NetExpr>,
         /// The second operand
@@ -188,4 +187,56 @@ pub enum NetExpr {
         /// Base accumulator identity
         identity: Box<NetExpr>,
     },
+}
+
+/// Network representation of a unary operator
+///
+/// This enum defines the serialized unary operators mapped from the
+/// runtime counterparts for transmission over the network
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum NetUnOp {
+    /// Negation operator
+    Neg,
+    /// Logical negation operator
+    Not,
+}
+
+/// Network representation of a binary operator
+///
+/// This enum defines the serialized binary operators mapped from the
+/// runtime counterparts for transmission over the network
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum NetBinOp {
+    /// Addition operator
+    Add,
+    /// Subtraction operator
+    Sub,
+    /// Multiplication operator
+    Mul,
+    /// Division operator
+    Div,
+    /// Equality comparison operator
+    Eq,
+    /// Less-than comparison operator
+    Lt,
+    /// Greater-than comparison operator
+    Gt,
+    /// Logical conjunction operator
+    And,
+    /// Logical disjunction operator
+    Or,
+}
+
+/// Network representation of a data type
+///
+/// This enum defines the serialized data types mapped from the
+/// runtime counterparts for transmission over the network
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum NetDataType {
+    /// String data type representation
+    String,
+    /// Number data type representation
+    Number,
+    /// Boolean data type representation
+    Bool,
 }
