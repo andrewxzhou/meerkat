@@ -2428,7 +2428,7 @@ mod tests {
             "init read must respect the lock"
         );
         assert!(
-            manager.services.get("s2").is_none(),
+            !manager.services.contains_key("s2"),
             "failed init rolls back"
         );
         // the foreign lock is untouched
