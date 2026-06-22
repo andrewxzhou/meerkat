@@ -92,8 +92,15 @@ pub async fn run_repl(
         let reply = n
             .handle_command(meerkat_lib::net::NetworkCommand::Listen { addr: listen_addr })
             .await;
-        crate::listen_success_addr(reply)?;
+        let addr = crate::listen_success_addr(reply)?;
+        let node_ip = manager.get_node_ip();
+        let peer_id = n.local_peer_id();
+        let addr_str = addr
+            .0
+            .replace("0.0.0.0", &node_ip)
+            .replace("127.0.0.1", &node_ip);
         manager.network = Some(n);
+        manager.set_local_address(format!("{}/p2p/{}", addr_str, peer_id));
     }
 
     let mut repl_env: Vec<(Symbol, Value)> = Vec::new();
