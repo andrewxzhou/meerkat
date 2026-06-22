@@ -113,7 +113,7 @@ pub async fn execute(
                 }
             }
         }
-        ActionStmt::Let { name, expr } => {
+        ActionStmt::Let { name, ty: _, expr } => {
             let val = eval(
                 expr,
                 env,

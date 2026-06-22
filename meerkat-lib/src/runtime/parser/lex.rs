@@ -102,6 +102,8 @@ pub enum Token<'a> {
     Assgn,
     #[token("=>")]
     Fn_Assgn,
+    #[token("->")]
+    Arrow,
     #[token("==")]
     EQ_EQ,
     #[token("<")]
@@ -186,6 +188,10 @@ pub enum Token<'a> {
     BOOL_KW,
     #[token("let")]
     LET_KW,
+    #[token("int")]
+    INT_KW,
+    #[token("unit")]
+    UNIT_KW,
     #[token("watch")]
     WATCH_KW,
 

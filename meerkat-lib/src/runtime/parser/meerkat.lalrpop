@@ -4,6 +4,7 @@ grammar<'input>(
 );
 
 use crate::ast::{Stmt, ActionStmt, Decl, Expr, UnOp, BinOp, DataType, Field, Value};
+use crate::runtime::tt::{Type, Param};
 use crate::runtime::interner::{Interner, Symbol};
 use lalrpop_util::ParseError;
 use crate::runtime::parser::lex::Token;
@@ -150,7 +151,7 @@ TableField: Field = {
 TableFields: Vec<Field> = TableField*;
 
 TableType: DataType = {
-    "int" => DataType::Int,
+    "number" => DataType::Number,
     "string" => DataType::String,
     "bool" => DataType::Bool,
 }
@@ -160,7 +161,7 @@ Type: Type = {
     <s:SimpleType> "->" <t:Type> => {
         Type::Func(Box::new(s), Box::new(t))
     },
-    "()" "->" <t:Type> => {
+    "(" ")" "->" <t:Type> => {
         Type::Func(Box::new(Type::Unit), Box::new(t))
     },
 }
@@ -186,9 +187,9 @@ Param: Param = {
 }
 
 Params: Vec<Param> = {
-    "()" => vec![],
+    "(" ")" => vec![],
     <i:Ident> => vec![Param { name: i, ty: None }],
-    "(" <mut v:(<Param> ",")*> <e:Param?> ")" => {
+    "(" <mut v:(<Param> ",")+> <e:Param?> ")" => {
         match e {
             None => v,
             Some(e) => {
@@ -196,7 +197,8 @@ Params: Vec<Param> = {
                 v
             }
         }
-    }
+    },
+    "(" <e:Param> ")" => vec![e],
 }
 
 Args: Vec<Expr> = {

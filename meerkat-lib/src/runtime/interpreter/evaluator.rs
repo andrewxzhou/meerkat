@@ -175,7 +175,7 @@ pub async fn eval(
         }
 
         Expr::Func { params, body } => {
-            let var_binded: HashSet<Symbol> = params.iter().cloned().collect();
+            let var_binded: HashSet<Symbol> = params.iter().map(|p| p.name).collect();
             let free_vars = body.free_var(&HashSet::new(), &var_binded);
             let captured_env: Vec<(Symbol, Value)> = env
                 .iter()
@@ -191,7 +191,7 @@ pub async fn eval(
                 .cloned()
                 .collect();
             Ok(Value::Closure {
-                params: params.clone(),
+                params: params.iter().map(|p| p.name).collect(),
                 body: body.clone(),
                 env: captured_env,
                 service_name: ctx.service_name,
@@ -255,6 +255,7 @@ mod tests {
     use super::*;
     use crate::ast::{ActionStmt, BinOp, Expr, Value};
     use crate::runtime::interner::Interner;
+    use crate::runtime::tt::Param;
     use crate::runtime::Manager;
 
     /// Verify that evaluating a literal expression returns the expected runtime `Value`
@@ -306,7 +307,7 @@ mod tests {
             txn: None,
         };
         let func_expr = Expr::Func {
-            params: vec![x],
+            params: vec![Param { name: x, ty: None }],
             body: Box::new(Expr::Binop {
                 op: BinOp::Add,
                 expr1: Box::new(Expr::Variable { name: x }),
@@ -367,7 +368,7 @@ mod tests {
             (v3, Value::Number { val: 3 }),
         ];
         let func_expr = Expr::Func {
-            params: vec![v4],
+            params: vec![Param { name: v4, ty: None }],
             body: Box::new(Expr::Binop {
                 op: BinOp::Add,
                 expr1: Box::new(Expr::Variable { name: v4 }),

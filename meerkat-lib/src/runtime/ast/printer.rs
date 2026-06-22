@@ -115,17 +115,27 @@ impl<'a> AstPrinter<'a> {
     pub fn print_decl(&self, decl: &Decl, indent: usize) {
         self.print_indent(indent);
         match decl {
-            Decl::VarDecl { name, val } => {
+            Decl::VarDecl { name, ty, val } => {
                 let name = *name;
-                println!("VarDecl: {{ name: {} }}", self.format_symbol(name));
+                println!(
+                    "VarDecl: {{ name: {}, ty: {:?} }}",
+                    self.format_symbol(name),
+                    ty
+                );
                 self.print_expr(val, indent + 1);
             }
-            Decl::DefDecl { name, val, is_pub } => {
+            Decl::DefDecl {
+                name,
+                ty,
+                val,
+                is_pub,
+            } => {
                 let name = *name;
                 let is_pub = *is_pub;
                 println!(
-                    "DefDecl: {{ name: {}, is_pub: {} }}",
+                    "DefDecl: {{ name: {}, ty: {:?}, is_pub: {} }}",
                     self.format_symbol(name),
+                    ty,
                     is_pub
                 );
                 self.print_expr(val, indent + 1);
@@ -154,9 +164,13 @@ impl<'a> AstPrinter<'a> {
     pub fn print_action_stmt(&self, stmt: &ActionStmt, indent: usize) {
         self.print_indent(indent);
         match stmt {
-            ActionStmt::Let { name, expr } => {
+            ActionStmt::Let { name, ty, expr } => {
                 let name = *name;
-                println!("Let: {{ name: {} }}", self.format_symbol(name));
+                println!(
+                    "Let: {{ name: {}, ty: {:?} }}",
+                    self.format_symbol(name),
+                    ty
+                );
                 self.print_expr(expr, indent + 1);
             }
             ActionStmt::Expr(expr) => {
@@ -228,8 +242,16 @@ impl<'a> AstPrinter<'a> {
                 self.print_expr(expr2, indent + 1);
             }
             Expr::Func { params, body } => {
-                let params_str: Vec<String> =
-                    params.iter().map(|p| self.format_symbol(*p)).collect();
+                let params_str: Vec<String> = params
+                    .iter()
+                    .map(|p| {
+                        if let Some(ref t) = p.ty {
+                            format!("{}: {:?}", self.format_symbol(p.name), t)
+                        } else {
+                            self.format_symbol(p.name)
+                        }
+                    })
+                    .collect();
                 println!("Func: {{ params: {:?} }}", params_str);
                 self.print_expr(body, indent + 1);
             }

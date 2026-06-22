@@ -236,7 +236,7 @@ impl Manager {
 
         for decl in decls {
             match decl {
-                Decl::VarDecl { name, val } => {
+                Decl::VarDecl { name, ty: _, val } => {
                     let value = match eval(
                         &val,
                         &env,
@@ -1499,6 +1499,7 @@ mod tests {
         let mut tc = TestContext::new();
         let decls = vec![Decl::VarDecl {
             name: tc.x,
+            ty: None,
             val: Expr::Literal {
                 val: Value::Number { val: 1 },
             },
@@ -1514,12 +1515,14 @@ mod tests {
         let decls = vec![
             Decl::VarDecl {
                 name: tc.x,
+                ty: None,
                 val: Expr::Literal {
                     val: Value::Number { val: 2 },
                 },
             },
             Decl::DefDecl {
                 name: tc.f,
+                ty: None,
                 val: Expr::Binop {
                     op: crate::ast::BinOp::Add,
                     expr1: Box::new(Expr::Variable { name: tc.x }),
@@ -1549,12 +1552,14 @@ mod tests {
         let decls = vec![
             Decl::VarDecl {
                 name: tc.x,
+                ty: None,
                 val: Expr::Literal {
                     val: Value::Number { val: 1 },
                 },
             },
             Decl::DefDecl {
                 name: tc.f,
+                ty: None,
                 val: Expr::Binop {
                     op: crate::ast::BinOp::Add,
                     expr1: Box::new(Expr::Variable { name: tc.x }),
@@ -1585,6 +1590,7 @@ mod tests {
         let mut tc = TestContext::new();
         let decls = vec![Decl::VarDecl {
             name: tc.x,
+            ty: None,
             val: Expr::Literal {
                 val: Value::Number { val: 0 },
             },
@@ -1836,12 +1842,14 @@ mod tests {
                 vec![
                     Decl::VarDecl {
                         name: tc.w,
+                        ty: None,
                         val: Expr::Literal {
                             val: Value::Number { val: 10 },
                         },
                     },
                     Decl::DefDecl {
                         name: tc.bump,
+                        ty: None,
                         val: bump,
                         is_pub: true,
                     },
@@ -1855,6 +1863,7 @@ mod tests {
                 tc.s1,
                 vec![Decl::VarDecl {
                     name: tc.x,
+                    ty: None,
                     val: Expr::Literal {
                         val: Value::Number { val: 0 },
                     },
@@ -1926,6 +1935,7 @@ mod tests {
                 tc.s1,
                 vec![Decl::VarDecl {
                     name: tc.x,
+                    ty: None,
                     val: Expr::Literal {
                         val: Value::Number { val: 0 },
                     },
@@ -1967,6 +1977,7 @@ mod tests {
                 tc.s1,
                 vec![Decl::VarDecl {
                     name: tc.x,
+                    ty: None,
                     val: Expr::Literal {
                         val: Value::Number { val: 0 },
                     },
@@ -2004,6 +2015,7 @@ mod tests {
                 tc.s1,
                 vec![Decl::VarDecl {
                     name: tc.x,
+                    ty: None,
                     val: Expr::Literal {
                         val: Value::Number { val: 0 },
                     },
@@ -2062,12 +2074,14 @@ mod tests {
                 vec![
                     Decl::VarDecl {
                         name: tc.y,
+                        ty: None,
                         val: Expr::Literal {
                             val: Value::Number { val: 0 },
                         },
                     },
                     Decl::VarDecl {
                         name: tc.x,
+                        ty: None,
                         val: Expr::Literal {
                             val: Value::Number { val: 0 },
                         },
@@ -2147,6 +2161,7 @@ mod tests {
                 tc.s1,
                 vec![Decl::VarDecl {
                     name: tc.x,
+                    ty: None,
                     val: Expr::Literal {
                         val: Value::Number { val: 0 },
                     },
@@ -2199,6 +2214,7 @@ mod tests {
                 tc.s1,
                 vec![Decl::VarDecl {
                     name: tc.x,
+                    ty: None,
                     val: Expr::Literal {
                         val: Value::Number { val: 0 },
                     },

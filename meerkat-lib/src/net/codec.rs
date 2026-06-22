@@ -8,6 +8,7 @@ use crate::net::ast::{NetActionStmt, NetBinOp, NetDataType, NetExpr, NetField, N
 use crate::runtime::ast::{ActionStmt, BinOp, DataType, Expr, Field, UnOp, Value};
 use crate::runtime::interner::Interner;
 use crate::runtime::limits::{MAX_IDENTIFIER_LENGTH, MAX_STRING_LITERAL_LENGTH};
+use crate::runtime::tt::Param;
 
 fn validate_identifier(s: &str) -> Result<()> {
     if s.len() > MAX_IDENTIFIER_LENGTH {
@@ -213,7 +214,7 @@ pub fn encode_expr(expr: &Expr, interner: &Interner) -> Result<NetExpr> {
         Expr::Func { params, body } => {
             let mut encoded_params = Vec::new();
             for p in params {
-                let p_str = interner.get(*p);
+                let p_str = interner.get(p.name);
                 validate_identifier(p_str)?;
                 encoded_params.push(p_str.to_string());
             }
@@ -358,7 +359,13 @@ pub fn decode_expr(expr: NetExpr, interner: &mut Interner) -> Result<Expr> {
             for p in &params {
                 validate_identifier(p)?;
             }
-            let decoded_params = params.into_iter().map(|p| interner.insert(&p)).collect();
+            let decoded_params = params
+                .into_iter()
+                .map(|p| Param {
+                    name: interner.insert(&p),
+                    ty: None,
+                })
+                .collect();
             let decoded_body = Box::new(decode_expr(*body, interner)?);
             Ok(Expr::Func {
                 params: decoded_params,
@@ -455,7 +462,7 @@ pub fn decode_expr(expr: NetExpr, interner: &mut Interner) -> Result<Expr> {
 ///     `Result<NetActionStmt>`: The encoded `NetActionStmt` network representation
 pub fn encode_action_stmt(stmt: &ActionStmt, interner: &Interner) -> Result<NetActionStmt> {
     match stmt {
-        ActionStmt::Let { name, expr } => {
+        ActionStmt::Let { name, ty: _, expr } => {
             let name_str = interner.get(*name);
             validate_identifier(name_str)?;
             Ok(NetActionStmt::Let {
@@ -505,6 +512,7 @@ pub fn decode_action_stmt(stmt: NetActionStmt, interner: &mut Interner) -> Resul
             validate_identifier(&name)?;
             Ok(ActionStmt::Let {
                 name: interner.insert(&name),
+                ty: None,
                 expr: decode_expr(expr, interner)?,
             })
         }
@@ -680,6 +688,7 @@ mod tests {
 
         let stmt1 = ActionStmt::Let {
             name: var_x,
+            ty: None,
             expr: Expr::Literal {
                 val: Value::Number { val: 42 },
             },
@@ -847,7 +856,10 @@ mod tests {
         let mut interner = Interner::new();
         let param_name = interner.insert("p");
         let func_expr = Expr::Func {
-            params: vec![param_name],
+            params: vec![Param {
+                name: param_name,
+                ty: None,
+            }],
             body: Box::new(Expr::Literal {
                 val: Value::Number { val: 9 },
             }),
@@ -858,7 +870,10 @@ mod tests {
         let mut interner = Interner::new();
         let param_name = interner.insert("p");
         let func_expr = Expr::Func {
-            params: vec![param_name],
+            params: vec![Param {
+                name: param_name,
+                ty: None,
+            }],
             body: Box::new(Expr::Literal {
                 val: Value::Number { val: 9 },
             }),

@@ -45,7 +45,7 @@ impl Expr {
             }
             Expr::Func { params, body } => {
                 let mut new_binds = var_binded.clone();
-                new_binds.extend(params.iter().cloned());
+                new_binds.extend(params.iter().map(|p| p.name));
                 body.alpha_rename(&new_binds, renames);
             }
             Expr::Call { func, args } => {

@@ -150,6 +150,7 @@ fn test_parser_simple_expression_interning() {
         assert_eq!(decls.len(), 1);
         if let Decl::VarDecl {
             name: var_name,
+            ty: _,
             val: _,
         } = &decls[0]
         {

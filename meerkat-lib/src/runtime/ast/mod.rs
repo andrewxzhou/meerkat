@@ -1,6 +1,8 @@
 use crate::net::ServiceNetId;
 use crate::runtime::interner::Symbol;
+use crate::runtime::tt::{Param, Type};
 use std::fmt::Display;
+
 pub mod printer;
 pub use printer::AstPrinter;
 
@@ -29,6 +31,7 @@ pub enum BinOp {
 pub enum ActionStmt {
     Let {
         name: Symbol,
+        ty: Option<Type>,
         expr: Expr,
     },
     Expr(Expr),
@@ -139,7 +142,7 @@ pub enum Expr {
     },
 
     Func {
-        params: Vec<Symbol>,
+        params: Vec<Param>,
         body: Box<Expr>,
     },
     Call {
@@ -182,10 +185,12 @@ pub enum Expr {
 pub enum Decl {
     VarDecl {
         name: Symbol,
+        ty: Option<Type>,
         val: Expr,
     },
     DefDecl {
         name: Symbol,
+        ty: Option<Type>,
         val: Expr,
         is_pub: bool,
     },
@@ -366,7 +371,13 @@ impl Display for ActionStmt {
     ///     `std::fmt::Result`: The result of the formatting operation
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ActionStmt::Let { name, expr } => write!(f, "let {} = {}", name, expr),
+            ActionStmt::Let { name, ty, expr } => {
+                if let Some(t) = ty {
+                    write!(f, "let {}: {} = {}", name, t, expr)
+                } else {
+                    write!(f, "let {} = {}", name, expr)
+                }
+            }
             ActionStmt::Expr(expr) => write!(f, "{}", expr),
             ActionStmt::Do(expr) => write!(f, "do {}", expr),
             ActionStmt::Assert(expr, _) => write!(f, "assert {}", expr),
@@ -391,14 +402,24 @@ impl Display for Decl {
     ///     `std::fmt::Result`: The result of the formatting operation
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Decl::VarDecl { name, val } => {
-                write!(f, "var {} = {}", name, val)
-            }
-            Decl::DefDecl { name, val, is_pub } => {
-                if *is_pub {
-                    write!(f, "pub def {} = {}", name, val)
+            Decl::VarDecl { name, ty, val } => {
+                if let Some(t) = ty {
+                    write!(f, "var {}: {} = {}", name, t, val)
                 } else {
-                    write!(f, "def {} = {}", name, val)
+                    write!(f, "var {} = {}", name, val)
+                }
+            }
+            Decl::DefDecl {
+                name,
+                ty,
+                val,
+                is_pub,
+            } => {
+                let prefix = if *is_pub { "pub " } else { "" };
+                if let Some(t) = ty {
+                    write!(f, "{}def {}: {} = {}", prefix, name, t, val)
+                } else {
+                    write!(f, "{}def {} = {}", prefix, name, val)
                 }
             }
             Decl::TableDecl { name, .. } => {

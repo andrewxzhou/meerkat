@@ -55,7 +55,7 @@ impl Expr {
             }
             Expr::Func { params, body } => {
                 let mut new_binds = var_binded.clone();
-                new_binds.extend(params.iter().cloned());
+                new_binds.extend(params.iter().map(|p| p.name));
                 body.free_var(reactive_names, &new_binds)
             }
             Expr::Call { func, args } => {
@@ -78,7 +78,11 @@ impl Expr {
                         ActionStmt::Assert(expr, _) => {
                             free_vars.extend(expr.free_var(reactive_names, var_binded));
                         }
-                        ActionStmt::Let { name: _, expr } => {
+                        ActionStmt::Let {
+                            name: _,
+                            ty: _,
+                            expr,
+                        } => {
                             free_vars.extend(expr.free_var(reactive_names, var_binded));
                         }
                         ActionStmt::Expr(expr) => {
