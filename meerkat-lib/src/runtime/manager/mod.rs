@@ -2413,6 +2413,7 @@ mod tests {
             .try_write(&ext));
 
         // s2's init reads s1.x; under a real transaction this must fail to read-lock.
+        // since s2 is younger, it should die instead of waiting
         let result = tc
             .manager
             .create_service(
