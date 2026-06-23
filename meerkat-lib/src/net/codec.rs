@@ -32,13 +32,11 @@ fn validate_string_literal(s: &str) -> Result<()> {
     Ok(())
 }
 
-/// Encode a runtime `Type` into a network representation
-///
-/// Enforces type depth limit to prevent stack-overflow DoS attacks
+/// Encode a runtime `Type` using recursion depth accumulator
 ///
 /// Args:
-///     `ty` (`&Type`): The runtime type to encode
-///     `depth` (`usize`): The current recursion depth
+///     ty (`&Type`): The runtime type to encode
+///     depth (`usize`): The current recursion depth
 ///
 /// Returns:
 ///     `Result<NetType>`: The encoded network type representation
@@ -46,7 +44,7 @@ fn validate_string_literal(s: &str) -> Result<()> {
 /// Raises:
 ///     `Error::LimitExceeded`: The type nesting depth exceeds
 ///     maximum limit
-pub fn encode_type(ty: &Type, depth: usize) -> Result<NetType> {
+fn encode_type_internal(ty: &Type, depth: usize) -> Result<NetType> {
     if depth > MAX_TYPE_DEPTH {
         return Err(Error::LimitExceeded(format!(
             "Type nesting depth exceeds maximum limit of {}",
@@ -61,25 +59,40 @@ pub fn encode_type(ty: &Type, depth: usize) -> Result<NetType> {
         Type::Tuple(ts) => {
             let mut encoded_ts = Vec::new();
             for t in ts {
-                encoded_ts.push(encode_type(t, depth + 1)?);
+                encoded_ts.push(encode_type_internal(t, depth + 1)?);
             }
             Ok(NetType::Tuple(encoded_ts))
         }
         Type::Func(t1, t2) => {
-            let et1 = encode_type(t1, depth + 1)?;
-            let et2 = encode_type(t2, depth + 1)?;
+            let et1 = encode_type_internal(t1, depth + 1)?;
+            let et2 = encode_type_internal(t2, depth + 1)?;
             Ok(NetType::Func(Box::new(et1), Box::new(et2)))
         }
     }
 }
 
-/// Decode a network `NetType` representation into a runtime `Type`
+/// Encode a runtime `Type` into a network representation
 ///
 /// Enforces type depth limit to prevent stack-overflow DoS attacks
 ///
 /// Args:
-///     `ty` (`NetType`): The network type to decode
-///     `depth` (`usize`): The current recursion depth
+///     ty (`&Type`): The runtime type to encode
+///
+/// Returns:
+///     `Result<NetType>`: The encoded network type representation
+///
+/// Raises:
+///     `Error::LimitExceeded`: The type nesting depth exceeds
+///     maximum limit
+pub fn encode_type(ty: &Type) -> Result<NetType> {
+    encode_type_internal(ty, 0)
+}
+
+/// Decode a network `NetType` with recursion depth accumulator
+///
+/// Args:
+///     ty (`NetType`): The network type to decode
+///     depth (`usize`): The current recursion depth
 ///
 /// Returns:
 ///     `Result<Type>`: The decoded runtime type
@@ -87,7 +100,7 @@ pub fn encode_type(ty: &Type, depth: usize) -> Result<NetType> {
 /// Raises:
 ///     `Error::LimitExceeded`: The type nesting depth exceeds
 ///     maximum limit
-pub fn decode_type(ty: NetType, depth: usize) -> Result<Type> {
+fn decode_type_internal(ty: NetType, depth: usize) -> Result<Type> {
     if depth > MAX_TYPE_DEPTH {
         return Err(Error::LimitExceeded(format!(
             "Type nesting depth exceeds maximum limit of {}",
@@ -102,16 +115,33 @@ pub fn decode_type(ty: NetType, depth: usize) -> Result<Type> {
         NetType::Tuple(ts) => {
             let mut decoded_ts = Vec::new();
             for t in ts {
-                decoded_ts.push(decode_type(t, depth + 1)?);
+                decoded_ts.push(decode_type_internal(t, depth + 1)?);
             }
             Ok(Type::Tuple(decoded_ts))
         }
         NetType::Func(t1, t2) => {
-            let dt1 = decode_type(*t1, depth + 1)?;
-            let dt2 = decode_type(*t2, depth + 1)?;
+            let dt1 = decode_type_internal(*t1, depth + 1)?;
+            let dt2 = decode_type_internal(*t2, depth + 1)?;
             Ok(Type::Func(Box::new(dt1), Box::new(dt2)))
         }
     }
+}
+
+/// Decode a network `NetType` representation into a runtime `Type`
+///
+/// Enforces type depth limit to prevent stack-overflow DoS attacks
+///
+/// Args:
+///     ty (`NetType`): The network type to decode
+///
+/// Returns:
+///     `Result<Type>`: The decoded runtime type
+///
+/// Raises:
+///     `Error::LimitExceeded`: The type nesting depth exceeds
+///     maximum limit
+pub fn decode_type(ty: NetType) -> Result<Type> {
+    decode_type_internal(ty, 0)
 }
 
 /// Encode a runtime `Param` into a network representation
@@ -127,7 +157,7 @@ pub fn encode_param(param: &Param, interner: &Interner) -> Result<NetParam> {
     let name_str = interner.get(param.name);
     validate_identifier(name_str)?;
     let ty = match &param.ty {
-        Some(t) => Some(encode_type(t, 0)?),
+        Some(t) => Some(encode_type(t)?),
         None => None,
     };
     Ok(NetParam {
@@ -148,7 +178,7 @@ pub fn encode_param(param: &Param, interner: &Interner) -> Result<NetParam> {
 pub fn decode_param(param: NetParam, interner: &mut Interner) -> Result<Param> {
     validate_identifier(&param.name)?;
     let ty = match param.ty {
-        Some(t) => Some(decode_type(t, 0)?),
+        Some(t) => Some(decode_type(t)?),
         None => None,
     };
     Ok(Param {
@@ -578,14 +608,15 @@ pub fn decode_expr(expr: NetExpr, interner: &mut Interner) -> Result<Expr> {
 ///     interner (`&Interner`): The `Interner` for symbol lookup
 ///
 /// Returns:
-///     `Result<NetActionStmt>`: The encoded `NetActionStmt` network representation
+///     `Result<NetActionStmt>`: The encoded `NetActionStmt` network
+///     representation
 pub fn encode_action_stmt(stmt: &ActionStmt, interner: &Interner) -> Result<NetActionStmt> {
     match stmt {
         ActionStmt::Let { name, ty, expr } => {
             let name_str = interner.get(*name);
             validate_identifier(name_str)?;
             let encoded_ty = match ty {
-                Some(t) => Some(encode_type(t, 0)?),
+                Some(t) => Some(encode_type(t)?),
                 None => None,
             };
             Ok(NetActionStmt::Let {
@@ -635,7 +666,7 @@ pub fn decode_action_stmt(stmt: NetActionStmt, interner: &mut Interner) -> Resul
         NetActionStmt::Let { name, ty, expr } => {
             validate_identifier(&name)?;
             let decoded_ty = match ty {
-                Some(t) => Some(decode_type(t, 0)?),
+                Some(t) => Some(decode_type(t)?),
                 None => None,
             };
             Ok(ActionStmt::Let {
@@ -1275,13 +1306,14 @@ mod tests {
         assert!(matches!(res.unwrap_err(), Error::LimitExceeded(_)));
     }
 
-    /// Verify round-trip encoding and decoding for NetType and NetParam structures
+    /// Verify round-trip encoding and decoding for `NetType` and
+    /// `NetParam` structures
     #[test]
     fn test_codec_type_and_param_roundtrip() {
         let mut interner_orig = Interner::new();
         let param_name = interner_orig.insert("param_x");
 
-        // Construct Type::Func(Int -> String, Bool -> Unit)
+        // Construct `Type::Func(Int -> String, Bool -> Unit)`
         let original_type = Type::Func(
             Box::new(Type::Func(Box::new(Type::Int), Box::new(Type::String))),
             Box::new(Type::Func(Box::new(Type::Bool), Box::new(Type::Unit))),
@@ -1292,43 +1324,43 @@ mod tests {
             ty: Some(original_type.clone()),
         };
 
-        let encoded_type = encode_type(&original_type, 0).unwrap();
+        let encoded_type = encode_type(&original_type).unwrap();
         let encoded_param = encode_param(&original_param, &interner_orig).unwrap();
 
         let mut interner_new = Interner::new();
-        let decoded_type = decode_type(encoded_type, 0).unwrap();
+        let decoded_type = decode_type(encoded_type).unwrap();
         let decoded_param = decode_param(encoded_param, &mut interner_new).unwrap();
 
         assert_eq!(original_type, decoded_type);
         assert_eq!(original_param.ty, decoded_param.ty);
     }
 
-    /// Verify that deserializing a NetType exceeding MAX_TYPE_DEPTH
-    /// returns a limit exceeded error
+    /// Verify that deserializing a `NetType` exceeding
+    /// `MAX_TYPE_DEPTH` returns a limit exceeded error
     #[test]
     fn test_codec_type_depth_overflow() {
-        // Construct a NetType that exceeds MAX_TYPE_DEPTH (16)
+        // Construct a `NetType` that exceeds `MAX_TYPE_DEPTH` (16)
         let mut current_type = NetType::Int;
         for _ in 0..(MAX_TYPE_DEPTH + 1) {
             current_type = NetType::Func(Box::new(NetType::Bool), Box::new(current_type));
         }
 
-        let res = decode_type(current_type, 0);
+        let res = decode_type(current_type);
         assert!(res.is_err());
         assert!(matches!(res.unwrap_err(), Error::LimitExceeded(_)));
     }
 
-    /// Verify that encoding a Type exceeding MAX_TYPE_DEPTH returns
-    /// a limit exceeded error
+    /// Verify that encoding a `Type` exceeding `MAX_TYPE_DEPTH`
+    /// returns a limit exceeded error
     #[test]
     fn test_codec_encode_type_depth_overflow() {
-        // Construct a Type that exceeds MAX_TYPE_DEPTH (16)
+        // Construct a `Type` that exceeds `MAX_TYPE_DEPTH` (16)
         let mut current_type = Type::Int;
         for _ in 0..(MAX_TYPE_DEPTH + 1) {
             current_type = Type::Func(Box::new(Type::Bool), Box::new(current_type));
         }
 
-        let res = encode_type(&current_type, 0);
+        let res = encode_type(&current_type);
         assert!(res.is_err());
         assert!(matches!(res.unwrap_err(), Error::LimitExceeded(_)));
     }
