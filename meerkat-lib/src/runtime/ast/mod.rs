@@ -1,6 +1,8 @@
 use crate::net::ServiceNetId;
 use crate::runtime::interner::Symbol;
+use crate::runtime::tt::{Param, Type};
 use std::fmt::Display;
+
 pub mod printer;
 pub use printer::AstPrinter;
 
@@ -29,6 +31,7 @@ pub enum BinOp {
 pub enum ActionStmt {
     Let {
         name: Symbol,
+        ty: Option<Type>,
         expr: Expr,
     },
     Expr(Expr),
@@ -78,7 +81,7 @@ pub enum Stmt {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Value {
-    Number {
+    Int {
         val: i32,
     },
     Bool {
@@ -88,10 +91,16 @@ pub enum Value {
         val: String,
     },
     Closure {
-        params: Vec<Symbol>,
+        params: Vec<Param>,
         body: Box<Expr>,
         env: Vec<(Symbol, Value)>,
         service_name: Symbol,
+        /// Important: `None` indicates missing type info, not the
+        /// `unit` type. In practice, return types for closures should
+        /// generally be `Some` type; however, this was left as an
+        /// `Option` for now for maximum flexibility as development
+        /// continues
+        return_ty: Option<Type>,
     },
     ActionClosure {
         stmts: Vec<ActionStmt>,
@@ -139,8 +148,14 @@ pub enum Expr {
     },
 
     Func {
-        params: Vec<Symbol>,
+        params: Vec<Param>,
         body: Box<Expr>,
+        /// Important: `None` indicates missing type info, not the
+        /// `unit` type. In practice, return types for closures should
+        /// generally be `Some` type; however, this was left as an
+        /// `Option` for now for maximum flexibility as development
+        /// continues
+        return_ty: Option<Type>,
     },
     Call {
         func: Box<Expr>,
@@ -182,10 +197,12 @@ pub enum Expr {
 pub enum Decl {
     VarDecl {
         name: Symbol,
+        ty: Option<Type>,
         val: Expr,
     },
     DefDecl {
         name: Symbol,
+        ty: Option<Type>,
         val: Expr,
         is_pub: bool,
     },
@@ -198,13 +215,13 @@ pub enum Decl {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Field {
     pub name: Symbol,
-    pub ty: DataType,
+    pub ty: TableType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum DataType {
+pub enum TableType {
     String,
-    Number,
+    Int,
     Bool,
 }
 
@@ -246,16 +263,31 @@ impl Display for Value {
     ///     `std::fmt::Result`: The result of the formatting operation
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Value::Number { val } => write!(f, "{}", val),
+            Value::Int { val } => write!(f, "{}", val),
             Value::Bool { val } => write!(f, "{}", val),
             Value::String { val } => write!(f, "\"{}\"", val),
             Value::Closure {
-                params, body, env, ..
+                params,
+                body,
+                env,
+                return_ty,
+                ..
             } => {
                 let params_str: Vec<String> = params.iter().map(|p| p.to_string()).collect();
                 let env_str: Vec<String> =
                     env.iter().map(|(k, v)| format!("{}: {}", k, v)).collect();
-                write!(f, "fn({})[{:?}]{{{}}}", params_str.join(","), env_str, body)
+                if let Some(ref ty) = return_ty {
+                    write!(
+                        f,
+                        "fn({}) -> {}[{:?}]{{{}}}",
+                        params_str.join(","),
+                        ty,
+                        env_str,
+                        body
+                    )
+                } else {
+                    write!(f, "fn({})[{:?}]{{{}}}", params_str.join(","), env_str, body)
+                }
             }
             Value::ActionClosure {
                 stmts,
@@ -297,9 +329,17 @@ impl Display for Expr {
             Expr::If { cond, expr1, expr2 } => {
                 write!(f, "if {} then {} else {}", cond, expr1, expr2)
             }
-            Expr::Func { params, body } => {
+            Expr::Func {
+                params,
+                body,
+                return_ty,
+            } => {
                 let params_str: Vec<String> = params.iter().map(|p| p.to_string()).collect();
-                write!(f, "fn({})[{}]", params_str.join(","), body)
+                if let Some(ref ty) = return_ty {
+                    write!(f, "fn({}) -> {}[{}]", params_str.join(","), ty, body)
+                } else {
+                    write!(f, "fn({})[{}]", params_str.join(","), body)
+                }
             }
             Expr::Call { func, args } => write!(
                 f,
@@ -366,7 +406,13 @@ impl Display for ActionStmt {
     ///     `std::fmt::Result`: The result of the formatting operation
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ActionStmt::Let { name, expr } => write!(f, "let {} = {}", name, expr),
+            ActionStmt::Let { name, ty, expr } => {
+                if let Some(t) = ty {
+                    write!(f, "let {}: {} = {}", name, t, expr)
+                } else {
+                    write!(f, "let {} = {}", name, expr)
+                }
+            }
             ActionStmt::Expr(expr) => write!(f, "{}", expr),
             ActionStmt::Do(expr) => write!(f, "do {}", expr),
             ActionStmt::Assert(expr, _) => write!(f, "assert {}", expr),
@@ -391,14 +437,24 @@ impl Display for Decl {
     ///     `std::fmt::Result`: The result of the formatting operation
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Decl::VarDecl { name, val } => {
-                write!(f, "var {} = {}", name, val)
-            }
-            Decl::DefDecl { name, val, is_pub } => {
-                if *is_pub {
-                    write!(f, "pub def {} = {}", name, val)
+            Decl::VarDecl { name, ty, val } => {
+                if let Some(t) = ty {
+                    write!(f, "var {}: {} = {}", name, t, val)
                 } else {
-                    write!(f, "def {} = {}", name, val)
+                    write!(f, "var {} = {}", name, val)
+                }
+            }
+            Decl::DefDecl {
+                name,
+                ty,
+                val,
+                is_pub,
+            } => {
+                let prefix = if *is_pub { "pub " } else { "" };
+                if let Some(t) = ty {
+                    write!(f, "{}def {}: {} = {}", prefix, name, t, val)
+                } else {
+                    write!(f, "{}def {} = {}", prefix, name, val)
                 }
             }
             Decl::TableDecl { name, .. } => {

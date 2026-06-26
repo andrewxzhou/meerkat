@@ -6,6 +6,7 @@
 
 use crate::runtime::ast::{ActionStmt, Decl, Expr, Field, Stmt, Value};
 use crate::runtime::interner::{Interner, Symbol};
+use crate::runtime::tt::Type;
 
 const INDENTATION: usize = 2;
 
@@ -38,6 +39,20 @@ impl<'a> AstPrinter<'a> {
     ///     `String`: The formatted symbol string representation
     pub fn format_symbol(&self, sym: Symbol) -> String {
         format!("{} (\"{}\")", sym, self.interner.get(sym))
+    }
+
+    /// Helper function to format an optional type using `Display` representation
+    ///
+    /// Args:
+    ///     `ty` (`&Option<Type>`): The optional type to format
+    ///
+    /// Returns:
+    ///     `String`: The formatted type string representation
+    pub fn format_type_opt(&self, ty: &Option<Type>) -> String {
+        match ty {
+            Some(t) => format!("Some({})", t),
+            None => "None".to_string(),
+        }
     }
 
     /// Prints spaces corresponding to the current indentation level
@@ -115,17 +130,27 @@ impl<'a> AstPrinter<'a> {
     pub fn print_decl(&self, decl: &Decl, indent: usize) {
         self.print_indent(indent);
         match decl {
-            Decl::VarDecl { name, val } => {
+            Decl::VarDecl { name, ty, val } => {
                 let name = *name;
-                println!("VarDecl: {{ name: {} }}", self.format_symbol(name));
+                println!(
+                    "VarDecl: {{ name: {}, ty: {} }}",
+                    self.format_symbol(name),
+                    self.format_type_opt(ty)
+                );
                 self.print_expr(val, indent + 1);
             }
-            Decl::DefDecl { name, val, is_pub } => {
+            Decl::DefDecl {
+                name,
+                ty,
+                val,
+                is_pub,
+            } => {
                 let name = *name;
                 let is_pub = *is_pub;
                 println!(
-                    "DefDecl: {{ name: {}, is_pub: {} }}",
+                    "DefDecl: {{ name: {}, ty: {}, is_pub: {} }}",
                     self.format_symbol(name),
+                    self.format_type_opt(ty),
                     is_pub
                 );
                 self.print_expr(val, indent + 1);
@@ -154,9 +179,13 @@ impl<'a> AstPrinter<'a> {
     pub fn print_action_stmt(&self, stmt: &ActionStmt, indent: usize) {
         self.print_indent(indent);
         match stmt {
-            ActionStmt::Let { name, expr } => {
+            ActionStmt::Let { name, ty, expr } => {
                 let name = *name;
-                println!("Let: {{ name: {} }}", self.format_symbol(name));
+                println!(
+                    "Let: {{ name: {}, ty: {} }}",
+                    self.format_symbol(name),
+                    self.format_type_opt(ty)
+                );
                 self.print_expr(expr, indent + 1);
             }
             ActionStmt::Expr(expr) => {
@@ -227,10 +256,26 @@ impl<'a> AstPrinter<'a> {
                 self.print_expr(expr1, indent + 1);
                 self.print_expr(expr2, indent + 1);
             }
-            Expr::Func { params, body } => {
-                let params_str: Vec<String> =
-                    params.iter().map(|p| self.format_symbol(*p)).collect();
-                println!("Func: {{ params: {:?} }}", params_str);
+            Expr::Func {
+                params,
+                body,
+                return_ty,
+            } => {
+                let params_str: Vec<String> = params
+                    .iter()
+                    .map(|p| {
+                        if let Some(ref t) = p.ty {
+                            format!("{}: {}", self.format_symbol(p.name), t)
+                        } else {
+                            self.format_symbol(p.name)
+                        }
+                    })
+                    .collect();
+                println!(
+                    "Func: {{ params: {:?}, return_ty: {} }}",
+                    params_str,
+                    self.format_type_opt(return_ty)
+                );
                 self.print_expr(body, indent + 1);
             }
             Expr::Call { func, args } => {
@@ -307,9 +352,9 @@ impl<'a> AstPrinter<'a> {
     pub fn print_value(&self, val: &Value, indent: usize) {
         self.print_indent(indent);
         match val {
-            Value::Number { val } => {
+            Value::Int { val } => {
                 let val = *val;
-                println!("Number: {}", val);
+                println!("Int: {}", val);
             }
             Value::Bool { val } => {
                 let val = *val;
@@ -322,14 +367,24 @@ impl<'a> AstPrinter<'a> {
                 params,
                 body,
                 service_name,
+                return_ty,
                 ..
             } => {
                 let service_name = *service_name;
-                let params_str: Vec<String> =
-                    params.iter().map(|p| self.format_symbol(*p)).collect();
+                let params_str: Vec<String> = params
+                    .iter()
+                    .map(|p| {
+                        if let Some(ref t) = p.ty {
+                            format!("{}: {}", self.format_symbol(p.name), t)
+                        } else {
+                            self.format_symbol(p.name)
+                        }
+                    })
+                    .collect();
                 println!(
-                    "Closure: {{ params: {:?}, service_name: {} }}",
+                    "Closure: {{ params: {:?}, return_ty: {}, service_name: {} }}",
                     params_str,
+                    self.format_type_opt(return_ty),
                     self.format_symbol(service_name)
                 );
                 self.print_expr(body, indent + 1);

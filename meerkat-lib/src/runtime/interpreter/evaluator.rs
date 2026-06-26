@@ -82,10 +82,11 @@ pub async fn eval(
                     body,
                     env: closure_env,
                     service_name: closure_svc,
+                    ..
                 } => {
                     let mut new_env = closure_env.clone();
                     for (param, arg_val) in params.iter().zip(arg_vals) {
-                        new_env.push((*param, arg_val));
+                        new_env.push((param.name, arg_val));
                     }
                     eval(
                         &body,
@@ -119,25 +120,25 @@ pub async fn eval(
             let val1 = eval(expr1, env, ctx).await?;
             let val2 = eval(expr2, env, ctx).await?;
             match (op, val1, val2) {
-                (BinOp::Add, Value::Number { val: v1 }, Value::Number { val: v2 }) => {
-                    Ok(Value::Number { val: v1 + v2 })
+                (BinOp::Add, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
+                    Ok(Value::Int { val: v1 + v2 })
                 }
-                (BinOp::Sub, Value::Number { val: v1 }, Value::Number { val: v2 }) => {
-                    Ok(Value::Number { val: v1 - v2 })
+                (BinOp::Sub, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
+                    Ok(Value::Int { val: v1 - v2 })
                 }
-                (BinOp::Mul, Value::Number { val: v1 }, Value::Number { val: v2 }) => {
-                    Ok(Value::Number { val: v1 * v2 })
+                (BinOp::Mul, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
+                    Ok(Value::Int { val: v1 * v2 })
                 }
-                (BinOp::Div, Value::Number { val: v1 }, Value::Number { val: v2 }) => {
-                    Ok(Value::Number { val: v1 / v2 })
+                (BinOp::Div, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
+                    Ok(Value::Int { val: v1 / v2 })
                 }
-                (BinOp::Eq, Value::Number { val: v1 }, Value::Number { val: v2 }) => {
+                (BinOp::Eq, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
                     Ok(Value::Bool { val: v1 == v2 })
                 }
-                (BinOp::Lt, Value::Number { val: v1 }, Value::Number { val: v2 }) => {
+                (BinOp::Lt, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
                     Ok(Value::Bool { val: v1 < v2 })
                 }
-                (BinOp::Gt, Value::Number { val: v1 }, Value::Number { val: v2 }) => {
+                (BinOp::Gt, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
                     Ok(Value::Bool { val: v1 > v2 })
                 }
                 (BinOp::And, Value::Bool { val: v1 }, Value::Bool { val: v2 }) => {
@@ -155,7 +156,7 @@ pub async fn eval(
         Expr::Unop { op, expr } => {
             let val = eval(expr, env, ctx).await?;
             match (op, val) {
-                (UnOp::Neg, Value::Number { val: v }) => Ok(Value::Number { val: -v }),
+                (UnOp::Neg, Value::Int { val: v }) => Ok(Value::Int { val: -v }),
                 (UnOp::Not, Value::Bool { val: v }) => Ok(Value::Bool { val: !v }),
                 _ => Err(EvalError::TypeError(
                     "Type error in unary operation".to_string(),
@@ -174,8 +175,12 @@ pub async fn eval(
             }
         }
 
-        Expr::Func { params, body } => {
-            let var_binded: HashSet<Symbol> = params.iter().cloned().collect();
+        Expr::Func {
+            params,
+            body,
+            return_ty,
+        } => {
+            let var_binded: HashSet<Symbol> = params.iter().map(|p| p.name).collect();
             let free_vars = body.free_var(&HashSet::new(), &var_binded);
             let captured_env: Vec<(Symbol, Value)> = env
                 .iter()
@@ -195,6 +200,7 @@ pub async fn eval(
                 body: body.clone(),
                 env: captured_env,
                 service_name: ctx.service_name,
+                return_ty: return_ty.clone(),
             })
         }
 
@@ -255,6 +261,7 @@ mod tests {
     use super::*;
     use crate::ast::{ActionStmt, BinOp, Expr, Value};
     use crate::runtime::interner::Interner;
+    use crate::runtime::tt::Param;
     use crate::runtime::Manager;
 
     /// Verify that evaluating a literal expression returns the expected runtime `Value`
@@ -267,10 +274,10 @@ mod tests {
             txn: None,
         };
         let expr = Expr::Literal {
-            val: Value::Number { val: 42 },
+            val: Value::Int { val: 42 },
         };
         let result = eval(&expr, &[], &mut ctx).await.unwrap();
-        assert_eq!(result, Value::Number { val: 42 });
+        assert_eq!(result, Value::Int { val: 42 });
     }
 
     /// Verify that evaluating a binary add operation returns the sum of the numbers
@@ -285,14 +292,14 @@ mod tests {
         let expr = Expr::Binop {
             op: BinOp::Add,
             expr1: Box::new(Expr::Literal {
-                val: Value::Number { val: 2 },
+                val: Value::Int { val: 2 },
             }),
             expr2: Box::new(Expr::Literal {
-                val: Value::Number { val: 3 },
+                val: Value::Int { val: 3 },
             }),
         };
         let result = eval(&expr, &[], &mut ctx).await.unwrap();
-        assert_eq!(result, Value::Number { val: 5 });
+        assert_eq!(result, Value::Int { val: 5 });
     }
 
     /// Verify that defining a function and calling it yields the expected computed `Value`
@@ -306,23 +313,24 @@ mod tests {
             txn: None,
         };
         let func_expr = Expr::Func {
-            params: vec![x],
+            params: vec![Param { name: x, ty: None }],
             body: Box::new(Expr::Binop {
                 op: BinOp::Add,
                 expr1: Box::new(Expr::Variable { name: x }),
                 expr2: Box::new(Expr::Literal {
-                    val: Value::Number { val: 10 },
+                    val: Value::Int { val: 10 },
                 }),
             }),
+            return_ty: None,
         };
         let call_expr = Expr::Call {
             func: Box::new(func_expr),
             args: vec![Expr::Literal {
-                val: Value::Number { val: 5 },
+                val: Value::Int { val: 5 },
             }],
         };
         let result = eval(&call_expr, &[], &mut ctx).await.unwrap();
-        assert_eq!(result, Value::Number { val: 15 });
+        assert_eq!(result, Value::Int { val: 15 });
     }
 
     /// Verify that evaluating an action statement block produces an action `Value::ActionClosure`
@@ -338,7 +346,7 @@ mod tests {
         let action_expr = Expr::Action(vec![ActionStmt::Assign {
             name: var_name,
             expr: Expr::Literal {
-                val: Value::Number { val: 5 },
+                val: Value::Int { val: 5 },
             },
         }]);
         let result = eval(&action_expr, &[], &mut ctx).await.unwrap();
@@ -362,17 +370,18 @@ mod tests {
             txn: None,
         };
         let env = vec![
-            (v1, Value::Number { val: 1 }),
-            (v2, Value::Number { val: 2 }),
-            (v3, Value::Number { val: 3 }),
+            (v1, Value::Int { val: 1 }),
+            (v2, Value::Int { val: 2 }),
+            (v3, Value::Int { val: 3 }),
         ];
         let func_expr = Expr::Func {
-            params: vec![v4],
+            params: vec![Param { name: v4, ty: None }],
             body: Box::new(Expr::Binop {
                 op: BinOp::Add,
                 expr1: Box::new(Expr::Variable { name: v4 }),
                 expr2: Box::new(Expr::Variable { name: v1 }),
             }),
+            return_ty: None,
         };
         let result = eval(&func_expr, &env, &mut ctx).await.unwrap();
         match result {
@@ -385,7 +394,7 @@ mod tests {
                 assert_eq!(params.len(), 1);
                 assert_eq!(captured_env.len(), 1);
                 assert_eq!(captured_env[0].0, v1);
-                assert_eq!(captured_env[0].1, Value::Number { val: 1 });
+                assert_eq!(captured_env[0].1, Value::Int { val: 1 });
             }
             _ => panic!("Expected Closure"),
         }

@@ -119,12 +119,14 @@ mod tests {
             decls: vec![
                 Decl::VarDecl {
                     name: v2,
+                    ty: None,
                     val: Expr::Literal {
-                        val: Value::Number { val: 1 },
+                        val: Value::Int { val: 1 },
                     },
                 },
                 Decl::DefDecl {
                     name: v3,
+                    ty: None,
                     val: Expr::Variable { name: v2 },
                     is_pub: false,
                 },
@@ -146,12 +148,14 @@ mod tests {
             decls: vec![
                 Decl::VarDecl {
                     name: v2,
+                    ty: None,
                     val: Expr::Literal {
-                        val: Value::Number { val: 2 },
+                        val: Value::Int { val: 2 },
                     },
                 },
                 Decl::DefDecl {
                     name: v3,
+                    ty: None,
                     val: Expr::Variable { name: v2 },
                     is_pub: true,
                 },

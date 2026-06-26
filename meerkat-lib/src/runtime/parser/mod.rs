@@ -215,4 +215,37 @@ mod tests {
             Err(ParseError::User { ref error }) if error.contains("Assertion text exceeds maximum length")
         ));
     }
+
+    /// Verify that parsing a table declaration with unified `int` type
+    /// is successful
+    #[test]
+    fn test_parse_table_definition() {
+        use crate::ast::{Decl, Stmt, TableType};
+
+        let mut interner = Interner::new();
+        let input = "service test_srv { \
+            table test_tbl { \
+                id: int, \
+                name: string, \
+                active: bool, \
+            }; \
+        }";
+        let res = parse_string(input, &mut interner);
+        assert!(res.is_ok());
+        let ast = res.unwrap();
+        assert_eq!(ast.len(), 1);
+        if let Stmt::Service { decls, .. } = &ast[0] {
+            assert_eq!(decls.len(), 1);
+            if let Decl::TableDecl { fields, .. } = &decls[0] {
+                assert_eq!(fields.len(), 3);
+                assert_eq!(fields[0].ty, TableType::Int);
+                assert_eq!(fields[1].ty, TableType::String);
+                assert_eq!(fields[2].ty, TableType::Bool);
+            } else {
+                panic!("Expected TableDecl");
+            }
+        } else {
+            panic!("Expected Service Stmt");
+        }
+    }
 }

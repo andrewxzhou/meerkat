@@ -10,44 +10,75 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetField {
     pub name: String,
-    pub ty: NetDataType,
+    pub ty: NetTableType,
+}
+
+/// Network representation of a type in the Meerkat language
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum NetType {
+    Int,
+    String,
+    Bool,
+    Unit,
+    Tuple(Vec<NetType>),
+    Func(Box<NetType>, Box<NetType>),
+}
+
+/// Network representation of a function parameter
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct NetParam {
+    pub name: String,
+    pub ty: Option<NetType>,
 }
 
 /// Network representation of an action statement
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NetActionStmt {
-    /// Bind a value to a local name using `let`
-    Let { name: String, expr: NetExpr },
-    /// A standalone expression statement
+    Let {
+        name: String,
+        ty: Option<NetType>,
+        expr: NetExpr,
+    },
     Expr(NetExpr),
-    /// A `do` statement to evaluate an expression for side effects
     Do(NetExpr),
     /// An `assert` statement to check invariants
     ///
     /// The `String` parameter captures the exact raw source
     /// string of the assertion condition for error reporting
     Assert(NetExpr, String),
-    /// Re-assign a value to an existing variable
-    Assign { name: String, expr: NetExpr },
-    /// Insert a record into a table
-    Insert { row: NetExpr, table_name: String },
+    Assign {
+        name: String,
+        expr: NetExpr,
+    },
+    Insert {
+        row: NetExpr,
+        table_name: String,
+    },
 }
 
 /// Network representation of a value
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NetValue {
-    /// A numeric integer value
-    Number { val: i32 },
-    /// A boolean value
-    Bool { val: bool },
-    /// A `String` literal value
-    String { val: String },
+    Int {
+        val: i32,
+    },
+    Bool {
+        val: bool,
+    },
+    String {
+        val: String,
+    },
     /// A standard closure value with environment
     Closure {
-        params: Vec<String>,
+        params: Vec<NetParam>,
         body: Box<NetExpr>,
         env: Vec<(String, NetValue)>,
         service_name: String,
+        /// Important: `None` indicates missing type information, not the
+        /// `unit` type. In practice, the return types for closures should
+        /// generally be `Some` type; however, this was left as an `Option`
+        /// for now for maximum flexibility as development continues.
+        return_ty: Option<NetType>,
     },
     /// An action closure value with environment and network ID
     ActionClosure {
@@ -60,57 +91,56 @@ pub enum NetValue {
 /// Network representation of an expression
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NetExpr {
-    /// Literal constant value
-    Literal { val: NetValue },
-    /// Variable reference
-    Variable { name: String },
-    /// Tuple construct containing elements
-    Tuple { val: Vec<NetExpr> },
-    /// Key-value attribute binding
-    KeyVal { name: String, value: Box<NetExpr> },
-    /// Unary operator application
-    Unop { op: NetUnOp, expr: Box<NetExpr> },
-    /// Binary operator application
+    Literal {
+        val: NetValue,
+    },
+    Variable {
+        name: String,
+    },
+    Tuple {
+        val: Vec<NetExpr>,
+    },
+    KeyVal {
+        name: String,
+        value: Box<NetExpr>,
+    },
+    Unop {
+        op: NetUnOp,
+        expr: Box<NetExpr>,
+    },
     Binop {
         op: NetBinOp,
         expr1: Box<NetExpr>,
         expr2: Box<NetExpr>,
     },
-    /// Conditional branching expression
     If {
         cond: Box<NetExpr>,
         expr1: Box<NetExpr>,
         expr2: Box<NetExpr>,
     },
-    /// Anonymous function construct
     Func {
-        params: Vec<String>,
+        params: Vec<NetParam>,
         body: Box<NetExpr>,
+        return_ty: Option<NetType>,
     },
-    /// Function call expression
     Call {
         func: Box<NetExpr>,
         args: Vec<NetExpr>,
     },
-    /// Embedded action statement block
     Action(Vec<NetActionStmt>),
-    /// Accessing a remote service member
     MemberAccess {
         service_name: String,
         member_name: String,
     },
-    /// Data selection query
     Select {
         table_name: String,
         column_names: Vec<String>,
         where_clause: Box<NetExpr>,
     },
-    /// Inline table structure
     Table {
         schema: Vec<NetField>,
         records: Vec<NetExpr>,
     },
-    /// Fold aggregation construct
     Fold {
         table_name: String,
         column_name: String,
@@ -122,51 +152,34 @@ pub enum NetExpr {
 /// Network representation of a unary operator
 ///
 /// This enum defines the serialized unary operators mapped from the
-/// runtime counterparts for transmission over the network
+/// counterparts for transmission over the network
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum NetUnOp {
-    /// Negation operator
     Neg,
-    /// Logical negation operator
     Not,
 }
 
 /// Network representation of a binary operator
 ///
 /// This enum defines the serialized binary operators mapped from the
-/// runtime counterparts for transmission over the network
+/// counterparts for transmission over the network
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum NetBinOp {
-    /// Addition operator
     Add,
-    /// Subtraction operator
     Sub,
-    /// Multiplication operator
     Mul,
-    /// Division operator
     Div,
-    /// Equality comparison operator
     Eq,
-    /// Less-than comparison operator
     Lt,
-    /// Greater-than comparison operator
     Gt,
-    /// Logical conjunction operator
     And,
-    /// Logical disjunction operator
     Or,
 }
 
-/// Network representation of a data type
-///
-/// This enum defines the serialized data types mapped from the
-/// runtime counterparts for transmission over the network
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum NetDataType {
-    /// String data type representation
+/// Network representation of a table field data type
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum NetTableType {
+    Int,
     String,
-    /// Number data type representation
-    Number,
-    /// Boolean data type representation
     Bool,
 }

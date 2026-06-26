@@ -46,11 +46,11 @@ fn test_transaction_maps_indexing() {
     txn.locked.insert(key.clone());
     assert!(txn.locked.contains(&key));
 
-    let read_value = meerkat_lib::runtime::ast::Value::Number { val: 42 };
+    let read_value = meerkat_lib::runtime::ast::Value::Int { val: 42 };
     txn.read_cache.insert(key.clone(), read_value.clone());
     assert_eq!(txn.read_cache.get(&key), Some(&read_value));
 
-    let write_value = meerkat_lib::runtime::ast::Value::Number { val: 100 };
+    let write_value = meerkat_lib::runtime::ast::Value::Int { val: 100 };
     txn.written.insert(key.clone(), write_value.clone());
     assert_eq!(txn.written.get(&key), Some(&write_value));
 }
@@ -150,6 +150,7 @@ fn test_parser_simple_expression_interning() {
         assert_eq!(decls.len(), 1);
         if let Decl::VarDecl {
             name: var_name,
+            ty: _,
             val: _,
         } = &decls[0]
         {
@@ -179,4 +180,27 @@ fn test_servicenetid_equality_and_hashing() {
     map.insert(id1.clone(), 100);
     assert_eq!(map.get(&id2), Some(&100));
     assert_eq!(map.get(&id3), None);
+}
+
+/// Verify that `AstPrinter` prints optional types using their display format
+#[test]
+fn test_ast_printer_type_display() {
+    let interner = Interner::new();
+    let printer = AstPrinter::new(&interner);
+
+    use meerkat_lib::runtime::tt::{TupleType, Type};
+
+    // Create a type: (int, string) -> bool
+    let test_type = Type::Func(
+        Box::new(Type::Tuple(
+            TupleType::new(vec![Type::Int, Type::String]).unwrap(),
+        )),
+        Box::new(Type::Bool),
+    );
+
+    let formatted_some = printer.format_type_opt(&Some(test_type));
+    assert_eq!(formatted_some, "Some((int, string) -> bool)");
+
+    let formatted_none = printer.format_type_opt(&None);
+    assert_eq!(formatted_none, "None");
 }

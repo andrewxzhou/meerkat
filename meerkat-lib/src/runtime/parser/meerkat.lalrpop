@@ -1,21 +1,14 @@
-// L1 Compiler
-// Parser Grammar
-// Author: Miles Conn <mconn@andrew.cmu.edu>
-
-// Initial grammar for L1 
-
-// Grammar 
 grammar<'input>(
     input: &'input str,
     interner: &mut Interner
 );
 
-use crate::ast::{Stmt, ActionStmt, Decl, Expr, UnOp, BinOp, DataType, Field, Value};
+use crate::ast::{Stmt, ActionStmt, Decl, Expr, UnOp, BinOp, TableType, Field, Value};
+use crate::runtime::tt::{Type, Param, TupleType};
 use crate::runtime::interner::{Interner, Symbol};
 use lalrpop_util::ParseError;
 use crate::runtime::parser::lex::Token;
 use crate::runtime::limits::MAX_STRING_LITERAL_LENGTH;
-
 use std::str::FromStr;
 
 extern {
@@ -43,15 +36,17 @@ extern {
         "then" => Token::THEN_KW,
         "if" => Token::IF_KW,
         "else" => Token::ELSE_KW,
-        "number" => Token::NUMBER_KW,
         "string" => Token::STRING_KW,
         "bool" => Token::BOOL_KW,
+        "int" => Token::INT_KW,
+        "unit" => Token::UNIT_KW,
         "let" => Token::LET_KW,
         "watch" => Token::WATCH_KW,
         ";" => Token::Semicolon,
         "." => Token::Dot,
         "=" => Token::Assgn,
         "=>" => Token::Fn_Assgn,
+        "->" => Token::Arrow,
         "+" => Token::Plus,
         "-" => Token::Minus,
         "*" => Token::Asterisk,
@@ -62,9 +57,6 @@ extern {
         "&&" => Token::AND_AND,
         "||" => Token::OR_OR,
         "!" => Token::NOT_NOT,
-
-        
-        
         "strlit" => Token::StrLit(<&'input str>),
         "ident" => Token::Ident(<&'input str>),
         "num" => Token::Number(<i32>),
@@ -104,7 +96,9 @@ Stmt: Stmt = {
 ActionStmts: Vec<ActionStmt> = ActionStmt*;
 
 ActionStmt: ActionStmt = {
-    "let" <i:Ident> "=" <e:Expr> ";" => ActionStmt::Let { name: i, expr: e },
+    "let" <i:Ident> <t:(":" <Type>)?> "=" <e:Expr> ";" => {
+        ActionStmt::Let { name: i, ty: t, expr: e }
+    },
     "do" <e: Expr> ";" => {
         ActionStmt::Do(e)
     },
@@ -131,45 +125,83 @@ ActionStmt: ActionStmt = {
 }
 
 Decl: Decl = {
-    "var" <i:Ident> "=" <e:Expr> ";" => {
-        Decl::VarDecl { name: i, val: e }
+    "var" <i:Ident> <t:(":" <Type>)?> "=" <e:Expr> ";" => {
+        Decl::VarDecl { name: i, ty: t, val: e }
     },
-    "pub" "def" <i:Ident> "=" <e:Expr> ";" => {
-        Decl::DefDecl { name: i, val: e, is_pub: true }
+    "pub" "def" <i:Ident> <t:(":" <Type>)?> "=" <e:Expr> ";" => {
+        Decl::DefDecl { name: i, ty: t, val: e, is_pub: true }
     },
-    "def" <i:Ident> "=" <e:Expr> ";" => {
-        Decl::DefDecl { name: i, val: e, is_pub: false }
+    "def" <i:Ident> <t:(":" <Type>)?> "=" <e:Expr> ";" => {
+        Decl::DefDecl { name: i, ty: t, val: e, is_pub: false }
     },
-    "table" <i:Ident> "{" <f: Fields> "}" ";" => {
+    "table" <i:Ident> "{" <f: TableFields> "}" ";" => {
         Decl::TableDecl {name: i, fields: f }
     }
 }
 
 Decls: Vec<Decl> = Decl*;
 
-Field: Field = {
-   <i:Ident> ":" <t: DataType> "," => {
+TableField: Field = {
+   <i:Ident> ":" <t: TableType> "," => {
     Field {name: i, ty: t}
    } 
 }
 
-Fields: Vec<Field> = Field*;
+TableFields: Vec<Field> = TableField*;
 
-DataType: DataType = {
-    "number" => DataType::Number,
-    "string" => DataType::String,
-    "bool" => DataType::Bool,
+TableType: TableType = {
+    "int" => TableType::Int,
+    "string" => TableType::String,
+    "bool" => TableType::Bool,
 }
 
-Params: Vec<Symbol> = {
-    <mut v:(<Ident> ",")*> <e:Ident?> => 
-    match e {
-        None => v,
-        Some(e) => {
-            v.push(e);
-            v
+Type: Type = {
+    <s:SimpleType> => s,
+    <s:SimpleType> "->" <t:Type> => {
+        Type::Func(Box::new(s), Box::new(t))
+    },
+    "(" ")" "->" <t:Type> => {
+        Type::Func(Box::new(Type::Unit), Box::new(t))
+    },
+}
+
+SimpleType: Type = {
+    "int" => Type::Int,
+    "string" => Type::String,
+    "bool" => Type::Bool,
+    "unit" => Type::Unit,
+    "(" <t:Type> <mut ts:("," <Type>)*> ")" =>? {
+        if ts.is_empty() {
+            Ok(t)
+        } else {
+            let mut v = vec![t];
+            v.append(&mut ts);
+            TupleType::new(v)
+                .map(Type::Tuple)
+                .map_err(|e| ParseError::User {
+                    error: e.to_string(),
+                })
         }
     }
+}
+
+Param: Param = {
+    <i:Ident> <t:(":" <Type>)?> => Param { name: i, ty: t }
+}
+
+Params: Vec<Param> = {
+    "(" ")" => vec![],
+    <i:Ident> => vec![Param { name: i, ty: None }],
+    "(" <mut v:(<Param> ",")+> <e:Param?> ")" => {
+        match e {
+            None => v,
+            Some(e) => {
+                v.push(e);
+                v
+            }
+        }
+    },
+    "(" <e:Param> ")" => vec![e],
 }
 
 Args: Vec<Expr> = {
@@ -183,10 +215,8 @@ Args: Vec<Expr> = {
     }
 }
 
-
-
 SubExpr: Expr = {
-    <n:Number> => Expr::Literal { val: Value::Number { val: n } },
+    <n:Number> => Expr::Literal { val: Value::Int { val: n } },
     <b:Bool> => Expr::Literal { val: Value::Bool { val: b } },
     <s: "strlit"> => Expr::Literal { val: Value::String { val: s.to_owned() } },
     <i:Ident> => Expr::Variable { name: i },
@@ -248,7 +278,6 @@ Expr: Expr = {
             op: BinOp::Sub 
         }
     },
-   
 
     #[precedence(level="4")] #[assoc(side="left")]
     <e1:Expr> "==" <e2:Expr> => {
@@ -281,7 +310,6 @@ Expr: Expr = {
             op: BinOp::And 
         }
     },
-   
 
     #[precedence(level="6")] #[assoc(side="left")]
     <e1:Expr> "||" <e2:Expr> => {
@@ -302,9 +330,12 @@ Expr: Expr = {
     },
 
     #[precedence(level="8")] #[assoc(side="left")]
-    "fn" <params:Params> "=>" <e:Expr> => 
-    Expr::Func {
-        params, body: Box::new(e)
+    "fn" <params:Params> "=>" <e:Expr> => {
+        // The `return_ty` is set to `None` here because return types
+        // are inferred by a later pass instead of being parsed
+        Expr::Func {
+            params, body: Box::new(e), return_ty: None
+        }
     },
     "select" <mut cols: (<Ident> ",")*> <c: Ident?> "from" <t: Ident> "where" <cond: Expr> => Expr::Select {
         table_name: t,
