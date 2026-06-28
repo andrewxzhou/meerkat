@@ -1810,7 +1810,7 @@ mod tests {
                 member_name: tc.y,
             }),
             expr2: Box::new(Expr::Literal {
-                val: Value::Number { val: 2 },
+                val: Value::Int { val: 2 },
             }),
         };
         assert_eq!(
@@ -1822,7 +1822,7 @@ mod tests {
             op: crate::ast::BinOp::Add,
             expr1: Box::new(Expr::Variable { name: tc.x }),
             expr2: Box::new(Expr::Literal {
-                val: Value::Number { val: 1 },
+                val: Value::Int { val: 1 },
             }),
         };
         assert!(y_expr.cross_service_deps().is_empty());
@@ -1839,17 +1839,19 @@ mod tests {
         let s1_decls = vec![
             Decl::VarDecl {
                 name: tc.x,
+                ty: None,
                 val: Expr::Literal {
-                    val: Value::Number { val: 1 },
+                    val: Value::Int { val: 1 },
                 },
             },
             Decl::DefDecl {
                 name: tc.y,
+                ty: None,
                 val: Expr::Binop {
                     op: crate::ast::BinOp::Add,
                     expr1: Box::new(Expr::Variable { name: tc.x }),
                     expr2: Box::new(Expr::Literal {
-                        val: Value::Number { val: 1 },
+                        val: Value::Int { val: 1 },
                     }),
                 },
                 is_pub: true,
@@ -1860,6 +1862,7 @@ mod tests {
         // service s2 { pub def z = s1.y + 2; }
         let s2_decls = vec![Decl::DefDecl {
             name: z,
+            ty: None,
             val: Expr::Binop {
                 op: crate::ast::BinOp::Add,
                 expr1: Box::new(Expr::MemberAccess {
@@ -1867,7 +1870,7 @@ mod tests {
                     member_name: tc.y,
                 }),
                 expr2: Box::new(Expr::Literal {
-                    val: Value::Number { val: 2 },
+                    val: Value::Int { val: 2 },
                 }),
             },
             is_pub: true,
@@ -1884,7 +1887,7 @@ mod tests {
                 .get(&z)
                 .unwrap()
                 .value,
-            Value::Number { val: 4 }
+            Value::Int { val: 4 }
         );
 
         // s2.z is registered as a listener on s1.y
@@ -1904,7 +1907,7 @@ mod tests {
 
         // s1.x = 4  ->  s1.y = 5  ->  s2.z = 7, eagerly via the cascade
         tc.manager
-            .assign(tc.s1, tc.x, Value::Number { val: 4 }, None)
+            .assign(tc.s1, tc.x, Value::Int { val: 4 }, None)
             .await
             .unwrap();
 
@@ -1917,7 +1920,7 @@ mod tests {
                 .get(&z)
                 .unwrap()
                 .value,
-            Value::Number { val: 7 },
+            Value::Int { val: 7 },
             "s2.z should update eagerly through the cross-service listener cascade"
         );
     }
@@ -1932,17 +1935,19 @@ mod tests {
         let s1_decls = vec![
             Decl::VarDecl {
                 name: tc.x,
+                ty: None,
                 val: Expr::Literal {
-                    val: Value::Number { val: 1 },
+                    val: Value::Int { val: 1 },
                 },
             },
             Decl::DefDecl {
                 name: tc.y,
+                ty: None,
                 val: Expr::Binop {
                     op: crate::ast::BinOp::Add,
                     expr1: Box::new(Expr::Variable { name: tc.x }),
                     expr2: Box::new(Expr::Literal {
-                        val: Value::Number { val: 1 },
+                        val: Value::Int { val: 1 },
                     }),
                 },
                 is_pub: true,
@@ -1952,6 +1957,7 @@ mod tests {
 
         let s2_decls = vec![Decl::DefDecl {
             name: z,
+            ty: None,
             val: Expr::Binop {
                 op: crate::ast::BinOp::Add,
                 expr1: Box::new(Expr::MemberAccess {
@@ -1959,7 +1965,7 @@ mod tests {
                     member_name: tc.y,
                 }),
                 expr2: Box::new(Expr::Literal {
-                    val: Value::Number { val: 2 },
+                    val: Value::Int { val: 2 },
                 }),
             },
             is_pub: true,
@@ -1967,8 +1973,7 @@ mod tests {
         tc.manager.create_service(tc.s2, s2_decls).await.unwrap();
 
         let s2_id = tc.manager.services.get(&tc.s2).unwrap().id.0.clone();
-        let net_val =
-            codec::encode_value(&Value::Number { val: 10 }, &tc.manager.interner).unwrap();
+        let net_val = codec::encode_value(&Value::Int { val: 10 }, &tc.manager.interner).unwrap();
 
         // simulate a remote Update saying s1.y = 10
         let z_sym = tc.manager.interner.insert("z");
@@ -1986,7 +1991,7 @@ mod tests {
                 .get(&z)
                 .unwrap()
                 .value,
-            Value::Number { val: 12 }
+            Value::Int { val: 12 }
         );
     }
 
@@ -1998,17 +2003,19 @@ mod tests {
         let s1_decls = vec![
             Decl::VarDecl {
                 name: tc.x,
+                ty: None,
                 val: Expr::Literal {
-                    val: Value::Number { val: 1 },
+                    val: Value::Int { val: 1 },
                 },
             },
             Decl::DefDecl {
                 name: tc.y,
+                ty: None,
                 val: Expr::Binop {
                     op: crate::ast::BinOp::Add,
                     expr1: Box::new(Expr::Variable { name: tc.x }),
                     expr2: Box::new(Expr::Literal {
-                        val: Value::Number { val: 1 },
+                        val: Value::Int { val: 1 },
                     }),
                 },
                 is_pub: true,
