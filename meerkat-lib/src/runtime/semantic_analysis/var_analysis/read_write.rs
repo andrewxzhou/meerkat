@@ -10,7 +10,10 @@ impl Expr {
     /// only at the network boundary.
     pub fn cross_service_deps(&self) -> HashSet<(Symbol, Symbol)> {
         match self {
-            Expr::Literal { .. } | Expr::Table { .. } | Expr::Variable { .. } => HashSet::new(),
+            Expr::Literal { .. } | Expr::Variable { .. } => HashSet::new(),
+            // Tables are not yet supported in cross-service dependency analysis;
+            // they carry no MemberAccess today, so an empty set is correct for now.
+            Expr::Table { .. } => HashSet::new(),
             Expr::MemberAccess {
                 service_name,
                 member_name,

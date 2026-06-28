@@ -255,9 +255,10 @@ pub async fn eval(
             service_name,
             member_name,
         } => {
-            // #24: during a reactive recompute the cross-service deps are already
-            // cached, so resolve from the cache and skip the lookup (which for a
-            // remote service would be a network round-trip).
+            // #24: during a reactive update we check the cache first. If this
+            // (service, member) was already fetched for the def being recomputed,
+            // use the cached value instead of doing a lookup (which for a remote
+            // service would be a network round-trip).
             if let Some(v) = ctx
                 .manager
                 .reactive_cache

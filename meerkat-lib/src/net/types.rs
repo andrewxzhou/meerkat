@@ -143,7 +143,10 @@ pub enum MeerkatMessage {
     /// #24: subscribe `listener_service.listener_def` (living on the sender's
     /// node) as a listener on `service.member` (on this node). The owner
     /// registers it and replies with an initial `Update` carrying the current
-    /// value. Names are strings; symbols are interner-local.
+    /// value. Services, members, and defs are carried as strings rather than
+    /// symbols: symbols are interner ids local to one node, but these messages
+    /// cross nodes, so each side must resolve the names through its own interner
+    /// to know which service/member the request refers to.
     RequestUpdates {
         request_id: u64,
         service: String,

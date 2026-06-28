@@ -107,10 +107,8 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
 
             if args.server {
                 run_server(prog, remote_url_map, args.port, args.local, interner).await
-            } else if args.watch {
-                run_watch(prog, file, remote_url_map, args.local, interner).await
             } else {
-                run_client(prog, file, remote_url_map, args.local, interner).await
+                run_client(prog, file, remote_url_map, args.local, args.watch, interner).await
             }
         }
         None => {
@@ -531,12 +529,15 @@ async fn run_server(
                     reply_to,
                     ..
                 } => {
+                    let service_sym = manager.interner.insert(&service);
+                    let member_sym = manager.interner.insert(&member);
+                    let listener_def_sym = manager.interner.insert(&listener_def);
                     manager
                         .handle_request_updates(
-                            service,
-                            member,
-                            listener_service,
-                            listener_def,
+                            service_sym,
+                            member_sym,
+                            ServiceNetId(listener_service),
+                            listener_def_sym,
                             reply_to,
                         )
                         .await;
@@ -548,12 +549,15 @@ async fn run_server(
                     member,
                     value,
                 } => {
+                    let listener_def_sym = manager.interner.insert(&listener_def);
+                    let source_sym = manager.interner.insert(&source_service);
+                    let member_sym = manager.interner.insert(&member);
                     manager
                         .handle_update(
-                            listener_service,
-                            listener_def,
-                            source_service,
-                            member,
+                            ServiceNetId(listener_service),
+                            listener_def_sym,
+                            source_sym,
+                            member_sym,
                             value,
                         )
                         .await;
@@ -576,140 +580,22 @@ async fn run_server(
     }
 }
 
-async fn run_watch(
-    prog: Vec<Stmt>,
-    input_file: &str,
-    remote_url_map: std::collections::HashMap<String, String>,
-    local: bool,
-    interner: Interner,
-) -> Result<(), Box<dyn Error>> {
-    let mut manager = Manager::new(interner);
-    manager.local = local;
-
-    // Watch mode always needs the network to receive notifications.
-    let mut net = NetworkActor::new(NodeType::Server)
-        .await
-        .map_err(|e| format!("Network error: {}", e))?;
-    let listen_ip = if local { "127.0.0.1" } else { "0.0.0.0" };
-    let listen_addr = Address::new(format!("/ip4/{}/tcp/0", listen_ip));
-    let reply = net
-        .handle_command(NetworkCommand::Listen { addr: listen_addr })
-        .await;
-    if let NetworkReply::ListenSuccess { addr } = reply {
-        let node_ip = manager.get_node_ip();
-        let peer_id = net.local_peer_id();
-        let addr_str = addr
-            .0
-            .replace("0.0.0.0", &node_ip)
-            .replace("127.0.0.1", &node_ip);
-        manager.set_local_address(format!("{}/p2p/{}", addr_str, peer_id));
-    } else {
-        return Err("Failed to start network listener in watch mode".into());
-    }
-    manager.network = Some(net);
-
-    // Set up services: Import registers remotes, Service create_service subscribes
-    // to its cross-service deps.
-    for stmt in &prog {
-        match *stmt {
-            Stmt::Import {
-                ref path,
-                service_name,
-            } => {
-                if let Some(url) = remote_url_map.get(manager.interner.get(service_name)) {
-                    manager
-                        .remote_services
-                        .insert(service_name, Address::new(url.as_str()));
-                    println!(
-                        "Remote service '{}' registered at {}",
-                        manager.interner.get(service_name),
-                        url
-                    );
-                } else {
-                    let base_dir = std::path::Path::new(input_file)
-                        .parent()
-                        .unwrap_or(std::path::Path::new("."));
-                    let import_path = base_dir.join(path);
-                    let import_stmts =
-                        parser::parse_file(import_path.to_str().unwrap(), &mut manager.interner)
-                            .map_err(|e| format!("Import parse error: {}", e))?;
-                    for import_stmt in &import_stmts {
-                        if let Stmt::Service { name, ref decls } = *import_stmt {
-                            manager
-                                .create_service(name, decls.clone())
-                                .await
-                                .map_err(|e| format!("Import service error: {}", e))?;
-                        }
-                    }
-                }
-            }
-            Stmt::Service { name, ref decls } => {
-                manager
-                    .create_service(name, decls.clone())
-                    .await
-                    .map_err(|e| format!("Service error: {}", e))?;
-                println!("Service '{}' loaded", manager.interner.get(name));
-            }
-            _ => {}
-        }
-    }
-
-    println!("Watching for changes, press Ctrl+C to stop...");
-    loop {
-        let msg = manager
-            .network
-            .as_mut()
-            .and_then(|n| n.try_recv_event())
-            .and_then(|ev| match ev {
-                NetworkEvent::MessageReceived { msg, .. } => Some(msg),
-                _ => None,
-            });
-        if let Some(MeerkatMessage::Update {
-            listener_service,
-            listener_def,
-            source_service,
-            member,
-            value,
-        }) = msg
-        {
-            if let Ok(parsed) = codec::decode_value(value.clone(), &mut manager.interner) {
-                println!("[update] {}.{} = {:?}", source_service, member, parsed);
-            }
-            manager
-                .handle_update(
-                    listener_service.clone(),
-                    listener_def.clone(),
-                    source_service,
-                    member,
-                    value,
-                )
-                .await;
-            let lid = ServiceNetId(listener_service);
-            let def_sym = manager.interner.insert(&listener_def);
-            if let Some((_, svc)) = manager.services.iter().find(|(_, s)| s.id == lid) {
-                if let Some(vs) = svc.vars.get(&def_sym) {
-                    println!("          -> {} = {:?}", listener_def, vs.value);
-                }
-            }
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-    }
-}
-
 async fn run_client(
     prog: Vec<Stmt>,
     input_file: &str,
     remote_url_map: std::collections::HashMap<String, String>,
     local: bool,
+    watch: bool,
     interner: Interner,
 ) -> Result<(), Box<dyn Error>> {
     let mut manager = Manager::new(interner);
     manager.local = local;
 
-    // Start network if we have remote imports
+    // Start the network if we have remote imports, or always in watch mode
+    // (watch needs the network to receive change notifications).
     let mut net: Option<NetworkActor> = None;
     let mut local_full_addr: Option<String> = None;
-    if !remote_url_map.is_empty() {
+    if watch || !remote_url_map.is_empty() {
         let mut n = NetworkActor::new(NodeType::Server)
             .await
             .map_err(|e| format!("Network error: {}", e))?;
@@ -752,17 +638,20 @@ async fn run_client(
                 service_name,
                 ref stmts,
             } => {
-                manager
-                    .execute_action(service_name, stmts)
-                    .await
-                    .map_err(|e| {
-                        format!(
-                            "Test failed in '{}': {}",
-                            manager.interner.get(service_name),
-                            e
-                        )
-                    })?;
-                println!("@test({}) passed", manager.interner.get(service_name));
+                // Watch mode only observes; it does not run @test actions.
+                if !watch {
+                    manager
+                        .execute_action(service_name, stmts)
+                        .await
+                        .map_err(|e| {
+                            format!(
+                                "Test failed in '{}': {}",
+                                manager.interner.get(service_name),
+                                e
+                            )
+                        })?;
+                    println!("@test({}) passed", manager.interner.get(service_name));
+                }
             }
             &Stmt::Import {
                 ref path,
@@ -798,6 +687,45 @@ async fn run_client(
             }
             &Stmt::ActionStmt(_) => {}
             &Stmt::Update { .. } | &Stmt::Connect { .. } | &Stmt::Watch { .. } => {}
+        }
+    }
+
+    if watch {
+        println!("Watching for changes, press Ctrl+C to stop...");
+        loop {
+            let msg = manager
+                .network
+                .as_mut()
+                .and_then(|n| n.try_recv_event())
+                .and_then(|ev| match ev {
+                    NetworkEvent::MessageReceived { msg, .. } => Some(msg),
+                    _ => None,
+                });
+            if let Some(MeerkatMessage::Update {
+                listener_service,
+                listener_def,
+                source_service,
+                member,
+                value,
+            }) = msg
+            {
+                if let Ok(parsed) = codec::decode_value(value.clone(), &mut manager.interner) {
+                    println!("[update] {}.{} = {:?}", source_service, member, parsed);
+                }
+                let lid = ServiceNetId(listener_service);
+                let def_sym = manager.interner.insert(&listener_def);
+                let source_sym = manager.interner.insert(&source_service);
+                let member_sym = manager.interner.insert(&member);
+                manager
+                    .handle_update(lid.clone(), def_sym, source_sym, member_sym, value)
+                    .await;
+                if let Some((_, svc)) = manager.services.iter().find(|(_, s)| s.id == lid) {
+                    if let Some(vs) = svc.vars.get(&def_sym) {
+                        println!("          -> {} = {:?}", listener_def, vs.value);
+                    }
+                }
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         }
     }
 
