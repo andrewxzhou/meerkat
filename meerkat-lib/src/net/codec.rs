@@ -8,7 +8,7 @@ use crate::net::ast::{
     NetActionStmt, NetBinOp, NetExpr, NetField, NetParam, NetTableType, NetType, NetUnOp, NetValue,
 };
 use crate::runtime::ast::{ActionStmt, BinOp, Expr, Field, TableType, UnOp, Value};
-use crate::runtime::interner::Interner;
+use crate::runtime::interner::{Interner, Symbol};
 use crate::runtime::limits::{MAX_IDENTIFIER_LENGTH, MAX_STRING_LITERAL_LENGTH, MAX_TYPE_DEPTH};
 use crate::runtime::tt::{Param, TupleType, Type};
 
@@ -30,6 +30,51 @@ fn validate_string_literal(s: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// #24: validate and intern the identifier fields of a `RequestUpdates`
+/// message arriving over the wire. Per the zero-trust boundary, all interning
+/// of network-sourced names happens here in codec (never in the manager or
+/// main), after `validate_identifier`. `listener_service` and `reply_to` are
+/// network addresses, not identifiers, so they are not interned here.
+///
+/// Returns `(service, member, listener_def)` as interned `Symbol`s.
+pub fn decode_request_updates(
+    service: &str,
+    member: &str,
+    listener_def: &str,
+    interner: &mut Interner,
+) -> Result<(Symbol, Symbol, Symbol)> {
+    validate_identifier(service)?;
+    validate_identifier(member)?;
+    validate_identifier(listener_def)?;
+    Ok((
+        interner.insert(service),
+        interner.insert(member),
+        interner.insert(listener_def),
+    ))
+}
+
+/// #24: validate and intern the identifier fields of an `Update` message
+/// arriving over the wire (the `value` is decoded separately via
+/// `decode_value`). As with `decode_request_updates`, all interning of
+/// network-sourced names happens here after validation.
+///
+/// Returns `(listener_def, source_service, member)` as interned `Symbol`s.
+pub fn decode_update(
+    listener_def: &str,
+    source_service: &str,
+    member: &str,
+    interner: &mut Interner,
+) -> Result<(Symbol, Symbol, Symbol)> {
+    validate_identifier(listener_def)?;
+    validate_identifier(source_service)?;
+    validate_identifier(member)?;
+    Ok((
+        interner.insert(listener_def),
+        interner.insert(source_service),
+        interner.insert(member),
+    ))
 }
 
 /// Encode a runtime `Type` using recursion depth accumulator

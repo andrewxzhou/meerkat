@@ -529,9 +529,18 @@ async fn run_server(
                     reply_to,
                     ..
                 } => {
-                    let service_sym = manager.interner.insert(&service);
-                    let member_sym = manager.interner.insert(&member);
-                    let listener_def_sym = manager.interner.insert(&listener_def);
+                    // #24: validate + intern wire names through codec (the sole
+                    // interning authority for network data); skip on bad input.
+                    let (service_sym, member_sym, listener_def_sym) =
+                        match codec::decode_request_updates(
+                            &service,
+                            &member,
+                            &listener_def,
+                            &mut manager.interner,
+                        ) {
+                            Ok(syms) => syms,
+                            Err(_) => continue,
+                        };
                     manager
                         .handle_request_updates(
                             service_sym,
@@ -549,9 +558,16 @@ async fn run_server(
                     member,
                     value,
                 } => {
-                    let listener_def_sym = manager.interner.insert(&listener_def);
-                    let source_sym = manager.interner.insert(&source_service);
-                    let member_sym = manager.interner.insert(&member);
+                    // #24: validate + intern wire names through codec; skip on bad input.
+                    let (listener_def_sym, source_sym, member_sym) = match codec::decode_update(
+                        &listener_def,
+                        &source_service,
+                        &member,
+                        &mut manager.interner,
+                    ) {
+                        Ok(syms) => syms,
+                        Err(_) => continue,
+                    };
                     manager
                         .handle_update(
                             ServiceNetId(listener_service),
@@ -713,9 +729,16 @@ async fn run_client(
                     println!("[update] {}.{} = {:?}", source_service, member, parsed);
                 }
                 let lid = ServiceNetId(listener_service);
-                let def_sym = manager.interner.insert(&listener_def);
-                let source_sym = manager.interner.insert(&source_service);
-                let member_sym = manager.interner.insert(&member);
+                // #24: validate + intern wire names through codec; skip on bad input.
+                let (def_sym, source_sym, member_sym) = match codec::decode_update(
+                    &listener_def,
+                    &source_service,
+                    &member,
+                    &mut manager.interner,
+                ) {
+                    Ok(syms) => syms,
+                    Err(_) => continue,
+                };
                 manager
                     .handle_update(lid.clone(), def_sym, source_sym, member_sym, value)
                     .await;

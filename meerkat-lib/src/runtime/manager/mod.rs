@@ -872,9 +872,19 @@ impl Manager {
                         reply_to,
                         ..
                     } => {
-                        let service_sym = self.interner.insert(&service);
-                        let member_sym = self.interner.insert(&member);
-                        let listener_def_sym = self.interner.insert(&listener_def);
+                        // #24: validate + intern wire names through codec (the
+                        // sole interning authority for network data); skip the
+                        // message if any identifier fails validation.
+                        let (service_sym, member_sym, listener_def_sym) =
+                            match codec::decode_request_updates(
+                                &service,
+                                &member,
+                                &listener_def,
+                                &mut self.interner,
+                            ) {
+                                Ok(syms) => syms,
+                                Err(_) => continue,
+                            };
                         self.handle_request_updates(
                             service_sym,
                             member_sym,
@@ -891,9 +901,17 @@ impl Manager {
                         member,
                         value,
                     } => {
-                        let listener_def_sym = self.interner.insert(&listener_def);
-                        let source_sym = self.interner.insert(&source_service);
-                        let member_sym = self.interner.insert(&member);
+                        // #24: validate + intern wire names through codec; skip
+                        // the message if any identifier fails validation.
+                        let (listener_def_sym, source_sym, member_sym) = match codec::decode_update(
+                            &listener_def,
+                            &source_service,
+                            &member,
+                            &mut self.interner,
+                        ) {
+                            Ok(syms) => syms,
+                            Err(_) => continue,
+                        };
                         self.handle_update(
                             ServiceNetId(listener_service),
                             listener_def_sym,
