@@ -19,6 +19,23 @@ fn validate_identifier(s: &str) -> Result<()> {
             MAX_IDENTIFIER_LENGTH
         )));
     }
+    // Match the lexer's identifier rule ([A-Za-z_][A-Za-z0-9_]*) so a name
+    // arriving over the wire is rejected unless the parser would also accept
+    // it locally. Without this, length-valid but non-identifier strings
+    // (empty, whitespace, punctuation) could still be interned from the wire.
+    let mut chars = s.chars();
+    let valid = match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {
+            chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        _ => false,
+    };
+    if !valid {
+        return Err(Error::LimitExceeded(format!(
+            "invalid identifier (must match [A-Za-z_][A-Za-z0-9_]*): {:?}",
+            s
+        )));
+    }
     Ok(())
 }
 
@@ -1319,6 +1336,31 @@ mod tests {
         let res = decode_value(net_val, &mut interner);
         assert!(res.is_err());
         assert!(matches!(res.unwrap_err(), Error::LimitExceeded(_)));
+    }
+
+    /// #24: verify the codec rejects wire identifiers that the lexer would not
+    /// accept locally (whitespace, punctuation, leading digit, empty), so a
+    /// remote peer cannot grow the interner with non-identifier strings.
+    #[test]
+    fn test_codec_decode_rejects_non_identifier() {
+        let mut interner = Interner::new();
+        for bad in ["bad name", "bad!name", "1leading", "", "has.dot", "sp ace"] {
+            let res = decode_request_updates(bad, "member", "ldef", &mut interner);
+            assert!(
+                res.is_err(),
+                "decode_request_updates should reject service {:?}",
+                bad
+            );
+            let res = decode_update("ldef", bad, "member", &mut interner);
+            assert!(
+                res.is_err(),
+                "decode_update should reject source_service {:?}",
+                bad
+            );
+        }
+        // A well-formed identifier is accepted.
+        assert!(decode_request_updates("svc", "y", "z", &mut interner).is_ok());
+        assert!(decode_update("z", "svc", "y", &mut interner).is_ok());
     }
 
     /// Verify that encoding a value with an oversized string
