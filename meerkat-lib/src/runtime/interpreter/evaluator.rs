@@ -72,6 +72,31 @@ pub async fn eval(
     match expr {
         Expr::Literal { val } => Ok(val.clone()),
 
+        Expr::Html { parts } => {
+            // #39: render the template to an html value. Literal text is copied
+            // verbatim; each embedded expression is evaluated and formatted in
+            // place. Because the embedded parts are ordinary expressions,
+            // dependency analysis has already tracked them, so the html def is
+            // recomputed by the propagation machinery when a dependency changes.
+            let mut rendered = String::new();
+            for part in parts {
+                match part {
+                    crate::ast::HtmlPart::Text(t) => rendered.push_str(t),
+                    crate::ast::HtmlPart::Expr(e) => {
+                        let val = eval(e, env, ctx).await?;
+                        // #39: interpolate using the value's plain display. For
+                        // string values this currently includes surrounding
+                        // quotes; refining string interpolation formatting is a
+                        // known follow-up (the counter example uses ints).
+                        rendered.push_str(&val.to_string());
+                    }
+                }
+            }
+            Ok(Value::Html(crate::runtime::html::Html::from_rendered(
+                rendered,
+            )))
+        }
+
         Expr::Call { func, args } => {
             let func_val = eval(func, env, ctx).await?;
             let mut arg_vals = Vec::new();

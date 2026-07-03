@@ -107,6 +107,7 @@ pub async fn execute(
                 Value::Bool { val: false } => Err(EvalError::AssertionError(text.clone())),
                 Value::Int { .. }
                 | Value::String { .. }
+                | Value::Html(..)
                 | Value::Closure { .. }
                 | Value::ActionClosure { .. } => {
                     Err(EvalError::TypeError("assert expects a boolean".to_string()))

@@ -54,6 +54,11 @@ impl Expr {
                     arg.alpha_rename(var_binded, renames);
                 }
             }
+            Expr::Html { parts } => {
+                for e in parts.iter_mut().filter_map(crate::ast::HtmlPart::expr_mut) {
+                    e.alpha_rename(var_binded, renames);
+                }
+            }
 
             Expr::Action(stmts) => {
                 for stmt in stmts {

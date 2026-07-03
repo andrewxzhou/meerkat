@@ -39,6 +39,13 @@ impl Expr {
                 deps
             }
             Expr::Func { body, .. } => body.cross_service_deps(),
+            Expr::Html { parts } => {
+                let mut deps = HashSet::new();
+                for e in parts.iter().filter_map(crate::ast::HtmlPart::expr) {
+                    deps.extend(e.cross_service_deps());
+                }
+                deps
+            }
             Expr::Call { func, args } => {
                 let mut deps = func.cross_service_deps();
                 for arg in args {
@@ -127,6 +134,13 @@ impl Expr {
                 let mut new_binds = var_binded.clone();
                 new_binds.extend(params.iter().map(|p| p.name));
                 body.free_var(reactive_names, &new_binds)
+            }
+            Expr::Html { parts } => {
+                let mut free_vars = HashSet::new();
+                for e in parts.iter().filter_map(crate::ast::HtmlPart::expr) {
+                    free_vars.extend(e.free_var(reactive_names, var_binded));
+                }
+                free_vars
             }
             Expr::Call { func, args } => {
                 let mut free_vars = func.free_var(reactive_names, var_binded);

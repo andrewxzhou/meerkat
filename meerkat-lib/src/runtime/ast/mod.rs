@@ -1,4 +1,5 @@
 use crate::net::ServiceNetId;
+use crate::runtime::html::Html;
 use crate::runtime::interner::Symbol;
 use crate::runtime::tt::{Param, Type};
 use std::fmt::Display;
@@ -90,6 +91,9 @@ pub enum Value {
     String {
         val: String,
     },
+    /// An evaluated HTML value. The representation is encapsulated by the
+    /// `Html` ADT; see `runtime::html`.
+    Html(Html),
     Closure {
         params: Vec<Param>,
         body: Box<Expr>,
@@ -114,11 +118,48 @@ pub enum Value {
     },
 }
 
+/// A single part of an HTML template: either literal markup text or an
+/// embedded expression to be evaluated and rendered in place.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum HtmlPart {
+    Text(String),
+    Expr(Box<Expr>),
+}
+
+impl HtmlPart {
+    /// The embedded expression in this part, if any.
+    ///
+    /// Single source of truth for which expressions live inside an html
+    /// template, so traversals (dependency analysis, alpha renaming) do not
+    /// each re-encode the part structure.
+    pub fn expr(&self) -> Option<&Expr> {
+        match self {
+            HtmlPart::Text(_) => None,
+            HtmlPart::Expr(e) => Some(e),
+        }
+    }
+
+    /// Mutable counterpart to [`HtmlPart::expr`].
+    pub fn expr_mut(&mut self) -> Option<&mut Expr> {
+        match self {
+            HtmlPart::Text(_) => None,
+            HtmlPart::Expr(e) => Some(e),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Expr {
     /// Basic Lambda Core expressions
     Literal {
         val: Value,
+    },
+    /// An HTML template literal, a sequence of literal text and embedded
+    /// expressions (`{expr}` interpolations). Rendered to a `Value::Html`
+    /// at evaluation time; the embedded expressions are ordinary `Expr`s so
+    /// dependency analysis tracks them.
+    Html {
+        parts: Vec<HtmlPart>,
     },
     Variable {
         name: Symbol,
@@ -266,6 +307,7 @@ impl Display for Value {
             Value::Int { val } => write!(f, "{}", val),
             Value::Bool { val } => write!(f, "{}", val),
             Value::String { val } => write!(f, "\"{}\"", val),
+            Value::Html(html) => write!(f, "{}", html),
             Value::Closure {
                 params,
                 body,
@@ -321,6 +363,7 @@ impl Display for Expr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Expr::Literal { val } => write!(f, "{}", val),
+            Expr::Html { .. } => write!(f, "<html>"),
             Expr::Tuple { .. } => write!(f, "vector"),
             Expr::KeyVal { name, value } => write!(f, "keyval: {}, {}", name, value),
             Expr::Variable { name } => write!(f, "{}", name),
