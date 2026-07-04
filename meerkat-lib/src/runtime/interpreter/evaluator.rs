@@ -72,6 +72,23 @@ pub async fn eval(
     match expr {
         Expr::Literal { val } => Ok(val.clone()),
 
+        Expr::Html(template) => {
+            // #39: the evaluator owns evaluation (it has the async context) and
+            // the html module owns assembling the value, keeping the template
+            // and markup representation encapsulated. Evaluate each embedded
+            // expression in order, then hand the values to the template to
+            // render. Because the embedded expressions are ordinary Exprs,
+            // dependency analysis has tracked them, so the html def is
+            // recomputed by propagation when a dependency changes.
+            let mut values = Vec::new();
+            for e in template.embedded_exprs() {
+                values.push(eval(e, env, ctx).await?);
+            }
+            template.render(&values).map(Value::Html).ok_or_else(|| {
+                EvalError::RuntimeError("html render: value count mismatch".to_string())
+            })
+        }
+
         Expr::Call { func, args } => {
             let func_val = eval(func, env, ctx).await?;
             let mut arg_vals = Vec::new();
@@ -472,6 +489,29 @@ mod tests {
         match result {
             Err(EvalError::RuntimeError(ref s)) => assert_eq!(s, "Integer overflow"),
             other => panic!("Expected Err(EvalError::RuntimeError), got {:?}", other),
+        }
+    }
+
+    /// #39: an html template evaluates to a Value::Html whose rendered markup
+    /// has the interpolation substituted from the environment.
+    #[tokio::test]
+    async fn test_html_renders_with_interpolation() {
+        use crate::runtime::parser::parse_template;
+        let mut manager = Manager::new(Interner::new());
+        let count = manager.interner.insert("count");
+        let template = parse_template("The count is {count}.", &mut manager.interner)
+            .expect("parse html template");
+        let expr = Expr::Html(template);
+        let env = vec![(count, Value::Int { val: 2 })];
+        let mut ctx = EvalContext {
+            manager: &mut manager,
+            service_name: Symbol::empty(),
+            txn: None,
+        };
+        let result = eval(&expr, &env, &mut ctx).await.unwrap();
+        match result {
+            Value::Html(html) => assert_eq!(html.as_str(), "The count is 2."),
+            other => panic!("expected Value::Html, got {:?}", other),
         }
     }
 }

@@ -264,6 +264,11 @@ pub fn encode_value(val: &Value, interner: &Interner) -> Result<NetValue> {
     match val {
         Value::Int { val } => Ok(NetValue::Int { val: *val }),
         Value::Bool { val } => Ok(NetValue::Bool { val: *val }),
+        // HTML has no network representation yet. A structured, validatable
+        // wire form is deferred to the codec work in the code-transport PR.
+        Value::Html(_) => Err(Error::Message(
+            "html values cannot yet be sent over the network".to_string(),
+        )),
         Value::String { val } => {
             validate_string_literal(val)?;
             Ok(NetValue::String { val: val.clone() })
@@ -401,6 +406,11 @@ pub fn encode_expr(expr: &Expr, interner: &Interner) -> Result<NetExpr> {
         Expr::Literal { val } => Ok(NetExpr::Literal {
             val: encode_value(val, interner)?,
         }),
+        // HTML templates have no network representation yet; deferred to the
+        // code-transport PR alongside the html value wire form.
+        Expr::Html { .. } => Err(Error::Message(
+            "html expressions cannot yet be sent over the network".to_string(),
+        )),
         Expr::Variable { name } => {
             let name_str = interner.get(*name);
             validate_identifier(name_str)?;
