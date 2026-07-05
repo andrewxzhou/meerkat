@@ -504,3 +504,108 @@ async fn test_circuit_relay() {
     );
     println!("circuit relay test passed");
 }
+
+/// #39: full round-trip of the service-code protocol over the mock network.
+/// A client sends a ServiceCodeRequest; the "server" side receives it, slices
+/// the requested service's source with the real extract_service_source, and
+/// replies with a ServiceCodeResponse. The client receives the source back.
+///
+/// This exercises the new wire messages, their routing, and the real slicing
+/// logic. The thin main.rs run_server glue and Manager::fetch_service_source
+/// wrapper (over the already-tested send/await path) are covered by the
+/// manual client/server flow.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_service_code_request_roundtrip() {
+    use meerkat_lib::runtime::parser::extract_service_source;
+
+    let registry = MockNetwork::new_registry();
+    let mut server = MockNetwork::new_with_registry(registry.clone());
+    let mut client = MockNetwork::new_with_registry(registry.clone());
+
+    let server_reply = server
+        .handle_command(NetworkCommand::Listen {
+            addr: Address::new("/ip4/127.0.0.1/tcp/9000"),
+        })
+        .await;
+    let server_addr = match server_reply {
+        NetworkReply::ListenSuccess { addr } => addr,
+        other => panic!("Expected ListenSuccess, got {:?}", other),
+    };
+
+    let client_reply = client
+        .handle_command(NetworkCommand::Listen {
+            addr: Address::new("/ip4/127.0.0.1/tcp/9001"),
+        })
+        .await;
+    let client_addr = match client_reply {
+        NetworkReply::ListenSuccess { addr } => addr,
+        other => panic!("Expected ListenSuccess, got {:?}", other),
+    };
+
+    // The server's program source, hosting two services.
+    let server_source = "service counter { pub var count = 0; }\nservice other { var z = 1; }";
+
+    // Client requests the source of `counter`.
+    client
+        .handle_command(NetworkCommand::SendMessage {
+            addr: server_addr,
+            msg: MeerkatMessage::ServiceCodeRequest {
+                request_id: 1,
+                service: "counter".to_string(),
+                reply_to: client_addr.0.clone(),
+            },
+        })
+        .await;
+
+    // Server receives the request and slices the requested service.
+    let event = server
+        .event_rx
+        .try_recv()
+        .expect("Server should have received the code request");
+    let (request_id, service, reply_to) = match event {
+        NetworkEvent::MessageReceived {
+            msg:
+                MeerkatMessage::ServiceCodeRequest {
+                    request_id,
+                    service,
+                    reply_to,
+                },
+            ..
+        } => (request_id, service, reply_to),
+        other => panic!("Expected ServiceCodeRequest, got {:?}", other),
+    };
+
+    let response = match extract_service_source(server_source, &service) {
+        Some(src) => MeerkatMessage::ServiceCodeResponse {
+            request_id,
+            service,
+            source: src,
+        },
+        None => MeerkatMessage::ServiceCodeError {
+            request_id,
+            error: "not found".to_string(),
+        },
+    };
+
+    server
+        .handle_command(NetworkCommand::SendMessage {
+            addr: Address::new(&reply_to),
+            msg: response,
+        })
+        .await;
+
+    // Client receives the response with the sliced source.
+    let event = client
+        .event_rx
+        .try_recv()
+        .expect("Client should have received the code response");
+    match event {
+        NetworkEvent::MessageReceived {
+            msg: MeerkatMessage::ServiceCodeResponse { source, .. },
+            ..
+        } => {
+            assert_eq!(source, "service counter { pub var count = 0; }");
+        }
+        other => panic!("Expected ServiceCodeResponse, got {:?}", other),
+    }
+}

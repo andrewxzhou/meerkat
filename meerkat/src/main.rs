@@ -106,7 +106,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
             }
 
             if args.server {
-                run_server(prog, remote_url_map, args.port, args.local, interner).await
+                run_server(prog, file, remote_url_map, args.port, args.local, interner).await
             } else {
                 run_client(prog, file, remote_url_map, args.local, args.watch, interner).await
             }
@@ -254,11 +254,15 @@ fn listen_success_addr(reply: NetworkReply) -> Result<Address, Box<dyn Error>> {
 
 async fn run_server(
     prog: Vec<Stmt>,
+    input_file: &str,
     remote_url_map: std::collections::HashMap<String, String>,
     port: u16,
     local: bool,
     interner: Interner,
 ) -> Result<(), Box<dyn Error>> {
+    // #39: keep the raw source so we can answer ServiceCodeRequest by slicing
+    // out the requested service's `service <name> { ... }` block on demand.
+    let server_source = std::fs::read_to_string(input_file).unwrap_or_default();
     let mut net = NetworkActor::new(NodeType::Server).await?;
     let mut manager = Manager::new(interner);
     manager.local = local;
@@ -578,6 +582,33 @@ async fn run_server(
                         )
                         .await;
                 }
+                // #39: a client is asking for a service's source code by name.
+                // Slice the requested service's block out of the server source
+                // and reply with it, or reply with an error if not found.
+                MeerkatMessage::ServiceCodeRequest {
+                    request_id,
+                    service,
+                    reply_to,
+                } => {
+                    let response = match parser::extract_service_source(&server_source, &service) {
+                        Some(src) => MeerkatMessage::ServiceCodeResponse {
+                            request_id,
+                            service,
+                            source: src,
+                        },
+                        None => MeerkatMessage::ServiceCodeError {
+                            request_id,
+                            error: format!("service '{}' not found on this server", service),
+                        },
+                    };
+                    if let Some(net) = manager.network.as_mut() {
+                        net.handle_command(NetworkCommand::SendMessage {
+                            addr: Address::new(&reply_to),
+                            msg: response,
+                        })
+                        .await;
+                    }
+                }
                 MeerkatMessage::Ping { .. }
                 | MeerkatMessage::Pong { .. }
                 | MeerkatMessage::Announce { .. }
@@ -588,6 +619,9 @@ async fn run_server(
                 | MeerkatMessage::ActionResponse { .. }
                 | MeerkatMessage::CommitResponse { .. }
                 | MeerkatMessage::AbortResponse { .. }
+                // #39: code responses are client-bound replies, not seen at the server.
+                | MeerkatMessage::ServiceCodeResponse { .. }
+                | MeerkatMessage::ServiceCodeError { .. }
                 | MeerkatMessage::WaitParked { .. } => {}
             }
         }

@@ -166,6 +166,29 @@ pub enum MeerkatMessage {
         member: String,
         value: NetValue,
     },
+
+    /// #39: request the source code of a service class by name. A (browser)
+    /// client sends this to fetch a service it imports so it can parse and
+    /// instantiate the service locally. The service name is carried as a
+    /// string and resolved through the receiver's own interner, like the
+    /// other cross-node messages.
+    ServiceCodeRequest {
+        request_id: u64,
+        service: String,
+        reply_to: String,
+    },
+
+    /// #39: response to `ServiceCodeRequest` carrying the service's source
+    /// text. The requester parses it through its own parser (interning
+    /// locally) and instantiates the service.
+    ServiceCodeResponse {
+        request_id: u64,
+        service: String,
+        source: String,
+    },
+
+    /// #39: the requested service class was not found on this server.
+    ServiceCodeError { request_id: u64, error: String },
 }
 
 /// Errors that can occur when sending messages
