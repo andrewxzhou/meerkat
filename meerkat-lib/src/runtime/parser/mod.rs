@@ -201,51 +201,6 @@ fn parse_expr_fragment(src: &str, interner: &mut Interner) -> Result<crate::ast:
         .map_err(|e| format!("Parse error in html interpolation: {:?}", e))
 }
 
-/// #39: Extract the source text of a single `service <name> { ... }` block
-/// from full program source, by locating the service header and brace-matching
-/// to its closing brace. Used server-side to answer a request for a service's
-/// code by name.
-///
-/// Returns `None` if no service with that name is found. Brace matching does
-/// not account for a `}` inside a string literal (the same limitation noted
-/// for the html lexer); source that already parsed cleanly is well-formed for
-/// this purpose.
-pub fn extract_service_source(source: &str, service_name: &str) -> Option<String> {
-    let needle = format!("service {}", service_name);
-    let mut search_from = 0;
-    loop {
-        let rel = source[search_from..].find(&needle)?;
-        let start = search_from + rel;
-        let after = start + needle.len();
-        let boundary = source[after..]
-            .chars()
-            .next()
-            .map(|c| !c.is_alphanumeric() && c != '_')
-            .unwrap_or(true);
-        if !boundary {
-            search_from = after;
-            continue;
-        }
-        let brace_rel = source[start..].find('{')?;
-        let brace_start = start + brace_rel;
-        let mut depth: usize = 0;
-        for (i, ch) in source[brace_start..].char_indices() {
-            match ch {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        let end = brace_start + i + ch.len_utf8();
-                        return Some(source[start..end].to_string());
-                    }
-                }
-                _ => {}
-            }
-        }
-        return None;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,39 +323,6 @@ mod tests {
         } else {
             panic!("Expected Service Stmt");
         }
-    }
-
-    /// #39: extract a single service block from multi-service source.
-    #[test]
-    fn test_extract_service_source_basic() {
-        let src = "service a { var x = 1; }\nservice b { var y = 2; }";
-        let a = extract_service_source(src, "a").expect("a found");
-        assert_eq!(a, "service a { var x = 1; }");
-        let b = extract_service_source(src, "b").expect("b found");
-        assert_eq!(b, "service b { var y = 2; }");
-    }
-
-    /// #39: nested braces (e.g. an action body) are matched correctly.
-    #[test]
-    fn test_extract_service_source_nested_braces() {
-        let src = "service c { pub def f = action { x = x + 1; }; }";
-        let c = extract_service_source(src, "c").expect("c found");
-        assert_eq!(c, "service c { pub def f = action { x = x + 1; }; }");
-    }
-
-    /// #39: a name that is a prefix of another service is not mismatched.
-    #[test]
-    fn test_extract_service_source_word_boundary() {
-        let src = "service counters { var a = 0; }\nservice counter { var b = 0; }";
-        let got = extract_service_source(src, "counter").expect("counter found");
-        assert_eq!(got, "service counter { var b = 0; }");
-    }
-
-    /// #39: a missing service returns None.
-    #[test]
-    fn test_extract_service_source_not_found() {
-        let src = "service a { var x = 1; }";
-        assert!(extract_service_source(src, "zzz").is_none());
     }
 
     /// #39: parse_template splits literal text and interpolations, exposing the

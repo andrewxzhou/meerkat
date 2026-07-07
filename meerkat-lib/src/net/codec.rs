@@ -9,7 +9,9 @@ use crate::net::ast::{
 };
 use crate::runtime::ast::{ActionStmt, BinOp, Expr, Field, TableType, UnOp, Value};
 use crate::runtime::interner::{Interner, Symbol};
-use crate::runtime::limits::{MAX_IDENTIFIER_LENGTH, MAX_STRING_LITERAL_LENGTH, MAX_TYPE_DEPTH};
+use crate::runtime::limits::{
+    MAX_IDENTIFIER_LENGTH, MAX_NET_REQUEST_STRING_LENGTH, MAX_STRING_LITERAL_LENGTH, MAX_TYPE_DEPTH,
+};
 use crate::runtime::tt::{Param, TupleType, Type};
 
 fn validate_identifier(s: &str) -> Result<()> {
@@ -45,6 +47,22 @@ fn validate_string_literal(s: &str) -> Result<()> {
             "string literal exceeds maximum length of {} characters",
             MAX_STRING_LITERAL_LENGTH
         )));
+    }
+    Ok(())
+}
+
+/// #39: validate the length-bounded string fields of a `ServiceCodeRequest`
+/// arriving over the wire. `path` and `reply_to` are a resource path and a
+/// network address, not identifiers, so they are length-checked but not
+/// charset-validated or interned. The source in the response is unbounded.
+pub fn validate_service_code_request(path: &str, reply_to: &str) -> Result<()> {
+    for (field, value) in [("path", path), ("reply_to", reply_to)] {
+        if value.len() > MAX_NET_REQUEST_STRING_LENGTH {
+            return Err(Error::LimitExceeded(format!(
+                "{} exceeds maximum length of {} characters",
+                field, MAX_NET_REQUEST_STRING_LENGTH
+            )));
+        }
     }
     Ok(())
 }

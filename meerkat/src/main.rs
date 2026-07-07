@@ -262,7 +262,10 @@ async fn run_server(
 ) -> Result<(), Box<dyn Error>> {
     // #39: keep the raw source so we can answer ServiceCodeRequest by slicing
     // out the requested service's `service <name> { ... }` block on demand.
-    let server_source = std::fs::read_to_string(input_file).unwrap_or_default();
+    // Propagate a read error rather than silently serving empty source, which
+    // would make every code request report "not found".
+    let server_source = std::fs::read_to_string(input_file)
+        .map_err(|e| format!("Failed to read server source '{}': {}", input_file, e))?;
     let mut net = NetworkActor::new(NodeType::Server).await?;
     let mut manager = Manager::new(interner);
     manager.local = local;
@@ -585,20 +588,26 @@ async fn run_server(
                 // #39: a client is asking for a service's source code by name.
                 // Slice the requested service's block out of the server source
                 // and reply with it, or reply with an error if not found.
+                // #39: a client is requesting a .mkt file by path. Validate the
+                // length-bounded fields, then return the whole file source so
+                // the client can process it (services and any imports) through
+                // the normal program-loading path. The server currently hosts
+                // one program; mapping multiple paths to different files is a
+                // future extension.
                 MeerkatMessage::ServiceCodeRequest {
                     request_id,
-                    service,
+                    path,
                     reply_to,
                 } => {
-                    let response = match parser::extract_service_source(&server_source, &service) {
-                        Some(src) => MeerkatMessage::ServiceCodeResponse {
+                    let response = match codec::validate_service_code_request(&path, &reply_to) {
+                        Ok(()) => MeerkatMessage::ServiceCodeResponse {
                             request_id,
-                            service,
-                            source: src,
+                            path,
+                            source: server_source.clone(),
                         },
-                        None => MeerkatMessage::ServiceCodeError {
+                        Err(e) => MeerkatMessage::ServiceCodeError {
                             request_id,
-                            error: format!("service '{}' not found on this server", service),
+                            error: e.to_string(),
                         },
                     };
                     if let Some(net) = manager.network.as_mut() {

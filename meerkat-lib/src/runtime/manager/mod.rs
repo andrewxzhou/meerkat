@@ -1127,12 +1127,14 @@ impl Manager {
     ///
     /// Sends a `ServiceCodeRequest` and awaits the reply, reusing the same
     /// request/reply machinery as remote lookups. Returns the service's source
-    /// text, which the caller parses and instantiates locally. This is the
-    /// mechanism a browser client uses to load an imported service it cannot
-    /// read from a local file.
+    /// text of the requested `.mkt` file. The caller processes it through the
+    /// normal program-loading path (creating services and resolving imports),
+    /// rather than a separate loop here, to avoid duplicating that logic. This
+    /// is the mechanism a browser client uses to load a file it imports but
+    /// cannot read from a local disk.
     pub async fn fetch_service_source(
         &mut self,
-        service_name: &str,
+        path: &str,
         server_addr: Address,
     ) -> Result<String, EvalError> {
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -1143,7 +1145,7 @@ impl Manager {
 
         let msg = MeerkatMessage::ServiceCodeRequest {
             request_id,
-            service: service_name.to_string(),
+            path: path.to_string(),
             reply_to,
         };
 
@@ -1152,7 +1154,7 @@ impl Manager {
                 server_addr,
                 msg,
                 request_id,
-                format!("Timeout waiting for source of service '{}'", service_name),
+                format!("Timeout waiting for source of file '{}'", path),
             )
             .await?;
 
@@ -1165,27 +1167,6 @@ impl Manager {
                 "Unexpected reply to service code request".to_string(),
             )),
         }
-    }
-
-    /// #39: Fetch a service's source from a remote server and instantiate it
-    /// locally: parse the returned source (interning through the parser, the
-    /// sanctioned interner-writer) and create each service it defines.
-    pub async fn fetch_and_instantiate_service(
-        &mut self,
-        service_name: &str,
-        server_addr: Address,
-    ) -> Result<(), EvalError> {
-        let source = self.fetch_service_source(service_name, server_addr).await?;
-        let stmts = crate::runtime::parser::parse_string(&source, &mut self.interner)
-            .map_err(EvalError::RemoteDispatchFailed)?;
-        for stmt in &stmts {
-            if let crate::ast::Stmt::Service { name, decls } = stmt {
-                self.create_service(*name, decls.clone())
-                    .await
-                    .map_err(|e| EvalError::RemoteDispatchFailed(e.to_string()))?;
-            }
-        }
-        Ok(())
     }
 
     pub async fn remote_lookup(

@@ -167,23 +167,23 @@ pub enum MeerkatMessage {
         value: NetValue,
     },
 
-    /// #39: request the source code of a service class by name. A (browser)
-    /// client sends this to fetch a service it imports so it can parse and
-    /// instantiate the service locally. The service name is carried as a
-    /// string and resolved through the receiver's own interner, like the
-    /// other cross-node messages.
+    /// #39: request the source of a `.mkt` file by path. A (browser) client
+    /// sends this to fetch a file it imports so it can process it locally
+    /// (creating services and resolving further imports), like loading a
+    /// program normally. The path is a resource path, similar to a URL path.
     ServiceCodeRequest {
         request_id: u64,
-        service: String,
+        path: String,
         reply_to: String,
     },
 
-    /// #39: response to `ServiceCodeRequest` carrying the service's source
-    /// text. The requester parses it through its own parser (interning
-    /// locally) and instantiates the service.
+    /// #39: response to `ServiceCodeRequest` carrying the whole `.mkt` file
+    /// source. The requester processes it through the normal program-loading
+    /// path. The source is unbounded in length; only the request path and
+    /// reply address are length-limited.
     ServiceCodeResponse {
         request_id: u64,
-        service: String,
+        path: String,
         source: String,
     },
 
