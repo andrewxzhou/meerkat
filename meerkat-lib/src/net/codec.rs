@@ -354,7 +354,12 @@ pub fn decode_servicetype(nst: NetServiceType, interner: &mut Interner) -> Resul
         validate_identifier(&name_str)?;
         let sym = interner.insert(&name_str);
         let ty = decode_type(net_ty)?;
-        fields.bind(sym, ty);
+        if fields.bind(sym, ty).is_some() {
+            return Err(Error::Message(format!(
+                "duplicate field name '{}' in ServiceType",
+                name_str
+            )));
+        }
         field_order.push(sym);
     }
     Ok(ServiceType {
