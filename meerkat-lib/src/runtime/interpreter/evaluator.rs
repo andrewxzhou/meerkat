@@ -138,10 +138,12 @@ pub async fn eval(
         Expr::Binop { op, expr1, expr2 } => {
             let val1 = eval(expr1, env, ctx).await?;
             let val2 = eval(expr2, env, ctx).await?;
-            if let (BinOp::Eq, Some(l1), Some(l2)) = (op, val1.to_list_elements(), val2.to_list_elements()) {
-                Ok(Value::Bool { val: l1 == l2 })
-            } else {
-                match (op, val1, val2) {
+            if *op == BinOp::Eq {
+                if let (Some(l1), Some(l2)) = (val1.to_list_elements(), val2.to_list_elements()) {
+                    return Ok(Value::Bool { val: l1 == l2 });
+                }
+            }
+            match (op, val1, val2) {
                     (BinOp::Add, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
                         Ok(Value::Int { val: v1 + v2 })
                     }
@@ -186,7 +188,6 @@ pub async fn eval(
                     )),
                 }
             }
-        }
 
         Expr::Unop { op, expr } => {
             let val = eval(expr, env, ctx).await?;
