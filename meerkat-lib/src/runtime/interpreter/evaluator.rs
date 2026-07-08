@@ -139,8 +139,20 @@ pub async fn eval(
             let val1 = eval(expr1, env, ctx).await?;
             let val2 = eval(expr2, env, ctx).await?;
             if *op == BinOp::Eq {
-                if let (Some(l1), Some(l2)) = (val1.to_list_elements(), val2.to_list_elements()) {
-                    return Ok(Value::Bool { val: l1 == l2 });
+                match (&val1, &val2) {
+                    (Value::List { vals: v1 }, Value::List { vals: v2 }) => {
+                        return Ok(Value::Bool { val: v1 == v2 });
+                    }
+                    (Value::Range { start: s1, end: e1 }, Value::Range { start: s2, end: e2 }) => {
+                        return Ok(Value::Bool { val: s1 == s2 && e1 == e2 });
+                    }
+                    _ => {
+                        if let (Some(l1), Some(l2)) =
+                            (val1.to_list_elements(), val2.to_list_elements())
+                        {
+                            return Ok(Value::Bool { val: l1 == l2 });
+                        }
+                    }
                 }
             }
             match (op, val1, val2) {

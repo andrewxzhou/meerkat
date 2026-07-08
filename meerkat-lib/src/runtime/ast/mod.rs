@@ -351,16 +351,7 @@ impl Display for Value {
                 }
                 write!(f, "]")
             }
-            Value::Range { start, end } => {
-                write!(f, "[")?;
-                for (i, val) in (*start..*end).enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}", val)?;
-                }
-                write!(f, "]")
-            }
+            Value::Range { start, end } => write!(f, "{}..{}", start, end),
         }
     }
 }
