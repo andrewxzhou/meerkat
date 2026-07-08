@@ -338,9 +338,10 @@ pub fn encode_value(val: &Value, interner: &Interner) -> Result<NetValue> {
             }
             Ok(NetValue::List { vals: encoded })
         }
-        Value::Range { start, end } => {
-            Ok(NetValue::Range { start: *start, end: *end })
-        }
+        Value::Range { start, end } => Ok(NetValue::Range {
+            start: *start,
+            end: *end,
+        }),
     }
 }
 
@@ -415,9 +416,7 @@ pub fn decode_value(val: NetValue, interner: &mut Interner) -> Result<Value> {
             }
             Ok(Value::List { vals: decoded })
         }
-        NetValue::Range { start, end } => {
-            Ok(Value::Range { start, end })
-        }
+        NetValue::Range { start, end } => Ok(Value::Range { start, end }),
     }
 }
 
@@ -580,12 +579,10 @@ pub fn encode_expr(expr: &Expr, interner: &Interner) -> Result<NetExpr> {
             }
             Ok(NetExpr::List(encoded))
         }
-        Expr::Range { start, end } => {
-            Ok(NetExpr::Range {
-                start: Box::new(encode_expr(start, interner)?),
-                end: Box::new(encode_expr(end, interner)?),
-            })
-        }
+        Expr::Range { start, end } => Ok(NetExpr::Range {
+            start: Box::new(encode_expr(start, interner)?),
+            end: Box::new(encode_expr(end, interner)?),
+        }),
     }
 }
 
@@ -737,12 +734,10 @@ pub fn decode_expr(expr: NetExpr, interner: &mut Interner) -> Result<Expr> {
             }
             Ok(Expr::List(decoded))
         }
-        NetExpr::Range { start, end } => {
-            Ok(Expr::Range {
-                start: Box::new(decode_expr(*start, interner)?),
-                end: Box::new(decode_expr(*end, interner)?),
-            })
-        }
+        NetExpr::Range { start, end } => Ok(Expr::Range {
+            start: Box::new(decode_expr(*start, interner)?),
+            end: Box::new(decode_expr(*end, interner)?),
+        }),
     }
 }
 

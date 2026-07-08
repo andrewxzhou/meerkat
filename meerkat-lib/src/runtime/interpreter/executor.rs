@@ -162,8 +162,7 @@ pub async fn execute(
                 loop_env.push((*var, elem));
                 for s in body {
                     if let ExecuteEffect::Binding(name, val) =
-                        execute(s, &loop_env, manager, service_name, txn.as_deref_mut())
-                            .await?
+                        execute(s, &loop_env, manager, service_name, txn.as_deref_mut()).await?
                     {
                         loop_env.push((name, val));
                     }

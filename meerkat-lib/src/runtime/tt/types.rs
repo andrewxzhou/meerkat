@@ -116,12 +116,10 @@ impl std::fmt::Display for Type {
                     }
                 }
             }
-            Type::List(t) => {
-                match t.as_ref() {
-                    Type::Func(..) => write!(f, "({}) list", t),
-                    _ => write!(f, "{} list", t),
-                }
-            }
+            Type::List(t) => match t.as_ref() {
+                Type::Func(..) => write!(f, "({}) list", t),
+                _ => write!(f, "{} list", t),
+            },
         }
     }
 }

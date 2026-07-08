@@ -144,50 +144,50 @@ pub async fn eval(
                 }
             }
             match (op, val1, val2) {
-                    (BinOp::Add, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
-                        Ok(Value::Int { val: v1 + v2 })
-                    }
-                    (BinOp::Sub, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
-                        Ok(Value::Int { val: v1 - v2 })
-                    }
-                    (BinOp::Mul, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
-                        Ok(Value::Int { val: v1 * v2 })
-                    }
-                    (BinOp::Div, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
-                        // NOTE: Division by zero and division overflow (i32::MIN / -1) are the only
-                        // integer arithmetic operations that panic in Rust release mode.
-                        // If a modulo (%) operator is ever implemented in the future, it must
-                        // also include these identical bounds checks (x % 0 and i32::MIN % -1)
-                        // to prevent panics.
-                        let val = v1.checked_div(v2).ok_or_else(|| {
-                            EvalError::RuntimeError(if v2 == 0 {
-                                "Division by zero".to_string()
-                            } else {
-                                "Integer overflow".to_string()
-                            })
-                        })?;
-                        Ok(Value::Int { val })
-                    }
-                    (BinOp::Eq, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
-                        Ok(Value::Bool { val: v1 == v2 })
-                    }
-                    (BinOp::Lt, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
-                        Ok(Value::Bool { val: v1 < v2 })
-                    }
-                    (BinOp::Gt, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
-                        Ok(Value::Bool { val: v1 > v2 })
-                    }
-                    (BinOp::And, Value::Bool { val: v1 }, Value::Bool { val: v2 }) => {
-                        Ok(Value::Bool { val: v1 && v2 })
-                    }
-                    (BinOp::Or, Value::Bool { val: v1 }, Value::Bool { val: v2 }) => {
-                        Ok(Value::Bool { val: v1 || v2 })
-                    }
-                    _ => Err(EvalError::TypeError(
-                        "Type error in binary operation".to_string(),
-                    )),
+                (BinOp::Add, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
+                    Ok(Value::Int { val: v1 + v2 })
                 }
+                (BinOp::Sub, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
+                    Ok(Value::Int { val: v1 - v2 })
+                }
+                (BinOp::Mul, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
+                    Ok(Value::Int { val: v1 * v2 })
+                }
+                (BinOp::Div, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
+                    // NOTE: Division by zero and division overflow (i32::MIN / -1) are the only
+                    // integer arithmetic operations that panic in Rust release mode.
+                    // If a modulo (%) operator is ever implemented in the future, it must
+                    // also include these identical bounds checks (x % 0 and i32::MIN % -1)
+                    // to prevent panics.
+                    let val = v1.checked_div(v2).ok_or_else(|| {
+                        EvalError::RuntimeError(if v2 == 0 {
+                            "Division by zero".to_string()
+                        } else {
+                            "Integer overflow".to_string()
+                        })
+                    })?;
+                    Ok(Value::Int { val })
+                }
+                (BinOp::Eq, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
+                    Ok(Value::Bool { val: v1 == v2 })
+                }
+                (BinOp::Lt, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
+                    Ok(Value::Bool { val: v1 < v2 })
+                }
+                (BinOp::Gt, Value::Int { val: v1 }, Value::Int { val: v2 }) => {
+                    Ok(Value::Bool { val: v1 > v2 })
+                }
+                (BinOp::And, Value::Bool { val: v1 }, Value::Bool { val: v2 }) => {
+                    Ok(Value::Bool { val: v1 && v2 })
+                }
+                (BinOp::Or, Value::Bool { val: v1 }, Value::Bool { val: v2 }) => {
+                    Ok(Value::Bool { val: v1 || v2 })
+                }
+                _ => Err(EvalError::TypeError(
+                    "Type error in binary operation".to_string(),
+                )),
             }
+        }
 
         Expr::Unop { op, expr } => {
             let val = eval(expr, env, ctx).await?;
@@ -527,9 +527,15 @@ mod tests {
 
         // Test list literal [1, 2, 3]
         let list_expr = Expr::List(vec![
-            Expr::Literal { val: Value::Int { val: 1 } },
-            Expr::Literal { val: Value::Int { val: 2 } },
-            Expr::Literal { val: Value::Int { val: 3 } },
+            Expr::Literal {
+                val: Value::Int { val: 1 },
+            },
+            Expr::Literal {
+                val: Value::Int { val: 2 },
+            },
+            Expr::Literal {
+                val: Value::Int { val: 3 },
+            },
         ]);
         let list_val = eval(&list_expr, &[], &mut ctx).await.unwrap();
         assert_eq!(
@@ -545,8 +551,12 @@ mod tests {
 
         // Test range literal 0..3
         let range_expr = Expr::Range {
-            start: Box::new(Expr::Literal { val: Value::Int { val: 0 } }),
-            end: Box::new(Expr::Literal { val: Value::Int { val: 3 } }),
+            start: Box::new(Expr::Literal {
+                val: Value::Int { val: 0 },
+            }),
+            end: Box::new(Expr::Literal {
+                val: Value::Int { val: 3 },
+            }),
         };
         let range_val = eval(&range_expr, &[], &mut ctx).await.unwrap();
         assert_eq!(range_val, Value::Range { start: 0, end: 3 });
@@ -573,13 +583,23 @@ mod tests {
 
         // Test equality between range 1..4 and list [1, 2, 3]
         let range_expr_2 = Expr::Range {
-            start: Box::new(Expr::Literal { val: Value::Int { val: 1 } }),
-            end: Box::new(Expr::Literal { val: Value::Int { val: 4 } }),
+            start: Box::new(Expr::Literal {
+                val: Value::Int { val: 1 },
+            }),
+            end: Box::new(Expr::Literal {
+                val: Value::Int { val: 4 },
+            }),
         };
         let list_expr_2 = Expr::List(vec![
-            Expr::Literal { val: Value::Int { val: 1 } },
-            Expr::Literal { val: Value::Int { val: 2 } },
-            Expr::Literal { val: Value::Int { val: 3 } },
+            Expr::Literal {
+                val: Value::Int { val: 1 },
+            },
+            Expr::Literal {
+                val: Value::Int { val: 2 },
+            },
+            Expr::Literal {
+                val: Value::Int { val: 3 },
+            },
         ]);
         let eq_expr_2 = Expr::Binop {
             op: BinOp::Eq,
