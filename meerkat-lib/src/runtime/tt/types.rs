@@ -4,11 +4,13 @@
 //! type checking, and translation of type annotations
 
 use crate::runtime::interner::Symbol;
+use crate::runtime::Env;
+use std::hash::{Hash, Hasher};
 
 /// Represents a type in the Meerkat language
 ///
-/// This enum models all valid types including primitives, tuples, and function
-/// signatures
+/// This enum models all valid types including primitives,
+/// tuples, and function signatures
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     Int,
@@ -18,6 +20,58 @@ pub enum Type {
     Tuple(TupleType),
     Func(Box<Type>, Box<Type>),
     List(Box<Type>),
+}
+
+/// Type representation of a Meerkat service
+///
+/// We pair the generic `Env` with a separate `Vec<Symbol>` to track
+/// field declaration ordering. This keeps `Env` modular and highly
+/// reusable. Using standard `HashMap` inside `Env` is more performant,
+/// and separating ordering concerns leads to a simpler design overall
+#[derive(Debug, Clone)]
+pub struct ServiceType {
+    pub fields: Env<'static, Type>,
+    pub field_order: Vec<Symbol>,
+}
+
+// Standard `HashMap` does not implement `Hash` or support ordered
+// comparison out of the box. We implement `PartialEq` manually using
+// the `field_order` vector to ensure a deterministic, order-respecting
+// field equality check. This enables the live update system to compare
+// new and old service signatures to detect schema changes
+impl PartialEq for ServiceType {
+    fn eq(&self, other: &Self) -> bool {
+        if self.field_order != other.field_order {
+            return false;
+        }
+        for name in &self.field_order {
+            let ty_self = self.fields.find(*name);
+            let ty_other = other.fields.find(*name);
+            if ty_self != ty_other {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+// Implement `Eq` manually because the internal `Env` type cannot
+// derive `Eq` automatically due to its `HashMap` field
+impl Eq for ServiceType {}
+
+// Implement `Hash` manually using the `field_order` vector to hash
+// service fields in a deterministic order. This resolves the lack
+// of a standard `Hash` implementation on `HashMap` and provides
+// stable keys for indexing service definitions
+impl Hash for ServiceType {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.field_order.hash(state);
+        for name in &self.field_order {
+            if let Some(ty) = self.fields.find(*name) {
+                ty.hash(state);
+            }
+        }
+    }
 }
 
 /// A tuple type wrapping a list of types of arity 2 or greater

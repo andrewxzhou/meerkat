@@ -1,0 +1,157 @@
+//! Environment for the Meerkat language compiler and runtime
+//!
+//! This module implements the hierarchical environments used for both lexical
+//! scoping and type namespaces
+
+use crate::runtime::interner::Symbol;
+use std::collections::HashMap;
+
+/// A hierarchical environment mapping symbols to generic entries
+#[derive(Debug, Clone)]
+pub struct Env<'a, T> {
+    bindings: HashMap<Symbol, T>,
+    parent: Option<&'a Env<'a, T>>,
+}
+
+impl<'a, T> Env<'a, T> {
+    /// Create a new environment with an optional parent
+    ///
+    /// Args:
+    ///     `parent` (`Option<&'a Env<'a, T>>`): The parent environment reference
+    ///
+    /// Returns:
+    ///     `Env<'a, T>`: The newly created environment
+    pub fn new(parent: Option<&'a Env<'a, T>>) -> Self {
+        Env {
+            bindings: HashMap::new(),
+            parent,
+        }
+    }
+
+    /// Bind a symbol to a value in the current local environment scope
+    ///
+    /// Args:
+    ///     `name` (`Symbol`): The symbol to bind
+    ///     `value` (`T`): The value associated with the symbol
+    ///
+    /// Returns:
+    ///     `Option<T>`: The previous value if it was already bound locally
+    pub fn bind(&mut self, name: Symbol, value: T) -> Option<T> {
+        self.bindings.insert(name, value)
+    }
+
+    /// Remove a symbol binding from the current local environment scope
+    ///
+    /// Args:
+    ///     `name` (`Symbol`): The symbol to remove
+    ///
+    /// Returns:
+    ///     `Option<T>`: The removed value if it was bound locally
+    pub fn remove(&mut self, name: Symbol) -> Option<T> {
+        self.bindings.remove(&name)
+    }
+
+    /// Find a symbol in the environment chain, returning a reference to it
+    ///
+    /// Args:
+    ///     `name` (`Symbol`): The symbol to search
+    ///
+    /// Returns:
+    ///     `Option<&'a T>`: Reference to the value if found
+    pub fn find(&'a self, name: Symbol) -> Option<&'a T> {
+        if let Some(val) = self.bindings.get(&name) {
+            Some(val)
+        } else if let Some(parent) = self.parent {
+            parent.find(name)
+        } else {
+            None
+        }
+    }
+
+    /// Find a symbol and return both the environment and the value
+    ///
+    /// Args:
+    ///     `name` (`Symbol`): The symbol to search
+    ///
+    /// Returns:
+    ///     `Option<(&'a Env<'a, T>, &'a T)>`: The environment and the value
+    pub fn find_with_env(&'a self, name: Symbol) -> Option<(&'a Env<'a, T>, &'a T)> {
+        if let Some(val) = self.bindings.get(&name) {
+            Some((self, val))
+        } else if let Some(parent) = self.parent {
+            parent.find_with_env(name)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    /// Verify that `Env::new` constructs an empty environment scope
+    fn test_unit_env_new() {
+        let env: Env<'_, i32> = Env::new(None);
+        assert!(env.parent.is_none());
+        assert!(env.bindings.is_empty());
+    }
+
+    #[test]
+    /// Verify that `Env::bind` registers a symbol and `Env::find` retrieves it
+    fn test_unit_env_bind_and_find() {
+        let mut env = Env::new(None);
+        let s = Symbol::empty();
+        assert_eq!(env.bind(s, 42), None);
+        assert_eq!(env.find(s), Some(&42));
+        assert_eq!(env.bind(s, 43), Some(42));
+        assert_eq!(env.find(s), Some(&43));
+    }
+
+    #[test]
+    /// Verify that `Env::remove` deletes a binding from the local scope
+    fn test_unit_env_remove() {
+        let mut env = Env::new(None);
+        let s = Symbol::empty();
+        env.bind(s, 100);
+        assert_eq!(env.remove(s), Some(100));
+        assert_eq!(env.find(s), None);
+        assert_eq!(env.remove(s), None);
+    }
+
+    #[test]
+    /// Verify that child `Env` scopes fallback to parent and grandparent scopes
+    fn test_unit_env_hierarchical_lookup() {
+        let mut parent = Env::new(None);
+        let s1 = Symbol::empty();
+        parent.bind(s1, 1);
+
+        let mut child = Env::new(Some(&parent));
+        assert_eq!(child.find(s1), Some(&1));
+
+        let res = child.find_with_env(s1).unwrap();
+        assert!(std::ptr::eq(res.0, &parent));
+        assert_eq!(res.1, &1);
+
+        child.bind(s1, 2);
+        assert_eq!(child.find(s1), Some(&2));
+        let res_shadowed = child.find_with_env(s1).unwrap();
+        assert!(std::ptr::eq(res_shadowed.0, &child));
+        assert_eq!(res_shadowed.1, &2);
+    }
+
+    #[test]
+    /// Verify that lookup of unbound symbols returns `None`
+    fn test_unit_env_lookup_missing() {
+        let env: Env<'_, i32> = Env::new(None);
+        let s = Symbol::empty();
+        assert_eq!(env.find(s), None);
+        assert!(env.find_with_env(s).is_none());
+
+        let parent: Env<'_, i32> = Env::new(None);
+        let child = Env::new(Some(&parent));
+        assert_eq!(child.find(s), None);
+        assert!(child.find_with_env(s).is_none());
+    }
+}

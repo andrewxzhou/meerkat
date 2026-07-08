@@ -5,7 +5,8 @@
 
 use crate::error::{Error, Result};
 use crate::net::ast::{
-    NetActionStmt, NetBinOp, NetExpr, NetField, NetParam, NetTableType, NetType, NetUnOp, NetValue,
+    NetActionStmt, NetBinOp, NetExpr, NetField, NetParam, NetServiceType, NetTableType, NetType,
+    NetUnOp, NetValue,
 };
 use crate::net::types::MeerkatMessage;
 use crate::runtime::ast::{ActionStmt, BinOp, Expr, Field, TableType, UnOp, Value};
@@ -13,7 +14,8 @@ use crate::runtime::interner::{Interner, Symbol};
 use crate::runtime::limits::{
     MAX_IDENTIFIER_LENGTH, MAX_NET_REQUEST_STRING_LENGTH, MAX_STRING_LITERAL_LENGTH, MAX_TYPE_DEPTH,
 };
-use crate::runtime::tt::{Param, TupleType, Type};
+use crate::runtime::tt::{Param, ServiceType, TupleType, Type};
+use crate::runtime::Env;
 
 fn validate_identifier(s: &str) -> Result<()> {
     if s.len() > MAX_IDENTIFIER_LENGTH {
@@ -248,11 +250,32 @@ pub fn encode_type(ty: &Type) -> Result<NetType> {
     encode_type_internal(ty, 0)
 }
 
+/// Encode a runtime `ServiceType` into its network representation
+///
+/// Args:
+///     st (`&ServiceType`): The runtime service type to encode
+///     interner (`&Interner`): The interner for symbol lookup
+///
+/// Returns:
+///     `Result<NetServiceType>`: The encoded network service type
+pub fn encode_servicetype(st: &ServiceType, interner: &Interner) -> Result<NetServiceType> {
+    let mut fields = Vec::new();
+    for name in &st.field_order {
+        let name_str = interner.get(*name).to_string();
+        if let Some(field_ty) = st.fields.find(*name) {
+            let net_ty = encode_type(field_ty)?;
+            fields.push((name_str, net_ty));
+        }
+    }
+    Ok(NetServiceType { fields })
+}
+
 /// Decode a network `NetType` with recursion depth accumulator
 ///
 /// Args:
 ///     ty (`NetType`): The network type to decode
 ///     depth (`usize`): The current recursion depth
+///     interner (`&mut Interner`): The interner for interning symbols
 ///
 /// Returns:
 ///     `Result<Type>`: The decoded runtime type
@@ -314,6 +337,30 @@ fn decode_type_internal(ty: NetType, depth: usize) -> Result<Type> {
 ///     maximum limit
 pub fn decode_type(ty: NetType) -> Result<Type> {
     decode_type_internal(ty, 0)
+}
+
+/// Decode a network `NetServiceType` into a runtime `ServiceType`
+///
+/// Args:
+///     nst (`NetServiceType`): The network service type to decode
+///     interner (`&mut Interner`): The interner for interning symbols
+///
+/// Returns:
+///     `Result<ServiceType>`: The decoded runtime service type
+pub fn decode_servicetype(nst: NetServiceType, interner: &mut Interner) -> Result<ServiceType> {
+    let mut fields = Env::new(None);
+    let mut field_order = Vec::new();
+    for (name_str, net_ty) in nst.fields {
+        validate_identifier(&name_str)?;
+        let sym = interner.insert(&name_str);
+        let ty = decode_type(net_ty)?;
+        fields.bind(sym, ty);
+        field_order.push(sym);
+    }
+    Ok(ServiceType {
+        fields,
+        field_order,
+    })
 }
 
 /// Encode a runtime `Param` into a network representation
@@ -1764,5 +1811,29 @@ mod service_code_tests {
         let res = resolve_served_file(&dir, "nope.mkt");
         assert!(res.is_err(), "missing file must be rejected");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Verify round-trip encoding and decoding for a ServiceType
+    #[test]
+    fn test_codec_service_type_roundtrip() {
+        let mut interner = Interner::new();
+        let field_a = interner.insert("a");
+        let field_b = interner.insert("b");
+
+        let mut fields = Env::new(None);
+        fields.bind(field_a, Type::Int);
+        fields.bind(field_b, Type::String);
+
+        let original_type = ServiceType {
+            fields,
+            field_order: vec![field_a, field_b],
+        };
+
+        let encoded = encode_servicetype(&original_type, &interner).unwrap();
+
+        let mut interner_new = Interner::new();
+        let decoded = decode_servicetype(encoded, &mut interner_new).unwrap();
+
+        assert_eq!(original_type, decoded);
     }
 }
