@@ -187,7 +187,8 @@ pub enum MeerkatMessage {
         source: String,
     },
 
-    /// #39: the requested service class was not found on this server.
+    /// #39: error responding to a `ServiceCodeRequest`, e.g. an invalid
+    /// request (oversized path/reply_to) or a missing resource.
     ServiceCodeError { request_id: u64, error: String },
 }
 

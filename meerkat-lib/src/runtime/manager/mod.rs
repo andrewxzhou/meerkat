@@ -1123,11 +1123,11 @@ impl Manager {
     ///
     /// Raises:
     ///     EvalError::LocalDispatchFailed: If a timeout or dispatch error occurs
-    /// #39: Fetch the source code of a service from a remote server by name.
+    /// #39: Fetch the source of a `.mkt` file from a remote server by path.
     ///
     /// Sends a `ServiceCodeRequest` and awaits the reply, reusing the same
-    /// request/reply machinery as remote lookups. Returns the service's source
-    /// text of the requested `.mkt` file. The caller processes it through the
+    /// request/reply machinery as remote lookups. Returns the source text of
+    /// the requested `.mkt` file. The caller processes it through the
     /// normal program-loading path (creating services and resolving imports),
     /// rather than a separate loop here, to avoid duplicating that logic. This
     /// is the mechanism a browser client uses to load a file it imports but

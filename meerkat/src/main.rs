@@ -260,10 +260,10 @@ async fn run_server(
     local: bool,
     interner: Interner,
 ) -> Result<(), Box<dyn Error>> {
-    // #39: keep the raw source so we can answer ServiceCodeRequest by slicing
-    // out the requested service's `service <name> { ... }` block on demand.
-    // Propagate a read error rather than silently serving empty source, which
-    // would make every code request report "not found".
+    // #39: keep the raw source so we can answer a ServiceCodeRequest by
+    // returning the server's current `.mkt` program text to the client on
+    // demand. Propagate a read error rather than silently serving empty
+    // source, which would make every code request fail.
     let server_source = std::fs::read_to_string(input_file)
         .map_err(|e| format!("Failed to read server source '{}': {}", input_file, e))?;
     let mut net = NetworkActor::new(NodeType::Server).await?;
@@ -601,7 +601,7 @@ async fn run_server(
                         request_id,
                         path,
                         &reply_to,
-                        server_source.clone(),
+                        &server_source,
                     );
                     if let Some(net) = manager.network.as_mut() {
                         net.handle_command(NetworkCommand::SendMessage {

@@ -60,7 +60,7 @@ pub fn validate_service_code_request(path: &str, reply_to: &str) -> Result<()> {
     for (field, value) in [("path", path), ("reply_to", reply_to)] {
         if value.len() > MAX_NET_REQUEST_STRING_LENGTH {
             return Err(Error::LimitExceeded(format!(
-                "{} exceeds maximum length of {} characters",
+                "{} exceeds maximum length of {} bytes",
                 field, MAX_NET_REQUEST_STRING_LENGTH
             )));
         }
@@ -77,13 +77,15 @@ pub fn build_service_code_response(
     request_id: u64,
     path: String,
     reply_to: &str,
-    source: String,
+    source: &str,
 ) -> MeerkatMessage {
     match validate_service_code_request(&path, reply_to) {
+        // Only materialize the source (a clone/allocation) once the request
+        // has passed validation, so a rejected request does no extra work.
         Ok(()) => MeerkatMessage::ServiceCodeResponse {
             request_id,
             path,
-            source,
+            source: source.to_string(),
         },
         Err(e) => MeerkatMessage::ServiceCodeError {
             request_id,

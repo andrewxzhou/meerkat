@@ -570,8 +570,7 @@ async fn test_service_code_request_roundtrip() {
     };
 
     // Server builds the response via the same shared helper run_server uses.
-    let response =
-        build_service_code_response(request_id, path, &reply_to, server_source.to_string());
+    let response = build_service_code_response(request_id, path, &reply_to, server_source);
 
     server
         .handle_command(NetworkCommand::SendMessage {
@@ -657,7 +656,7 @@ async fn test_service_code_request_rejects_oversized_path() {
         other => panic!("Expected ServiceCodeRequest, got {:?}", other),
     };
 
-    let response = build_service_code_response(request_id, path, &reply_to, "unused".to_string());
+    let response = build_service_code_response(request_id, path, &reply_to, "unused");
 
     server
         .handle_command(NetworkCommand::SendMessage {
