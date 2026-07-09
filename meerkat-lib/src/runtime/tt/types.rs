@@ -155,9 +155,7 @@ impl<'a> Hash for ServiceType<'a> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.field_order.hash(state);
         for name in &self.field_order {
-            if let Some(ty) = self.fields.find(*name) {
-                ty.hash(state);
-            }
+            self.fields.find(*name).hash(state);
         }
     }
 }
@@ -437,5 +435,42 @@ mod tests {
         // Previously, st1 == st2 would be true (None == None)
         // With our fix, it must be false
         assert_ne!(st1, st2);
+    }
+
+    /// Verify that `ServiceType::hash` correctly handles missing
+    /// entries by producing distinct hashes for structurally different
+    /// configurations, preventing hash collisions
+    #[test]
+    fn test_service_type_hash_collisions() {
+        use std::collections::hash_map::DefaultHasher;
+
+        let mut interner = crate::runtime::interner::Interner::new();
+        let field_a = interner.insert("a");
+        let field_b = interner.insert("b");
+
+        // Construct `st1` with field order `[a, b]` but only `a` defined
+        let mut fields_st1 = Env::new(None);
+        fields_st1.bind(field_a, Type::Int);
+        let st1 = ServiceType {
+            fields: fields_st1,
+            field_order: vec![field_a, field_b],
+        };
+
+        // Construct `st2` with field order `[a, b]` but only `b` defined
+        let mut fields_st2 = Env::new(None);
+        fields_st2.bind(field_b, Type::Int);
+        let st2 = ServiceType {
+            fields: fields_st2,
+            field_order: vec![field_a, field_b],
+        };
+
+        // Calculate hashes for both `ServiceType` instances
+        let mut h1 = DefaultHasher::new();
+        let mut h2 = DefaultHasher::new();
+        st1.hash(&mut h1);
+        st2.hash(&mut h2);
+
+        // Verify that their hashes are distinct due to the presence markers
+        assert_ne!(h1.finish(), h2.finish());
     }
 }
