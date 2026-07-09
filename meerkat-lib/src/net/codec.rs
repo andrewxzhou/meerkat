@@ -252,24 +252,32 @@ pub fn encode_type(ty: &Type) -> Result<NetType> {
 /// Encode a runtime `ServiceType` into its network representation
 ///
 /// Args:
-///     st (`&ServiceType`): The runtime service type to encode
-///     interner (`&Interner`): The interner for symbol lookup
+///     `st` (`&ServiceType`): The runtime service type to encode
+///     `interner` (`&Interner`): The interner for symbol lookup
 ///
 /// Returns:
 ///     `Result<NetServiceType>`: The encoded network service type
+///
+/// Raises:
+///     `Error::Message`: If a field is missing due to a broken invariant
 pub fn encode_servicetype<'a>(st: &ServiceType<'a>, interner: &Interner) -> Result<NetServiceType> {
     let mut fields = Vec::new();
     for name in st.field_order() {
         let name_str = interner.get(*name).to_string();
-        debug_assert!(
-            st.fields().find(*name).is_some(),
-            "field_order entry missing from fields map: {}",
-            name_str
-        );
-        if let Some(field_ty) = st.fields().find(*name) {
-            let net_ty = encode_type(field_ty)?;
-            fields.push((name_str, net_ty));
-        }
+        // While `ServiceType` encapsulation theoretically guarantees
+        // that `field_order` entries exist in `fields`, we
+        // defensively return an `Error::Message` instead of
+        // panicking to ensure the network service fails
+        // gracefully if an internal bug occurs
+        let field_ty = st.fields().find(*name).ok_or_else(|| {
+            Error::Message(format!(
+                "Internal invariant broken: field_order \
+                     entry missing from fields map: {}",
+                name_str
+            ))
+        })?;
+        let net_ty = encode_type(field_ty)?;
+        fields.push((name_str, net_ty));
     }
     Ok(NetServiceType { fields })
 }
