@@ -673,3 +673,34 @@ fn test_integration_update_stmt_hoisted_var() {
     let res = resolve(&stmts);
     assert!(res.is_ok());
 }
+
+/// Verify that variables declared in an update statement do not leak
+/// to the outer scope
+#[test]
+fn test_integration_update_stmt_scoping() {
+    let mut interner = Interner::new();
+    let s1 = interner.insert("s1");
+    let y = interner.insert("y");
+
+    let s1_stmt = Stmt::Service {
+        name: s1,
+        decls: vec![],
+    };
+    let update_stmt = Stmt::Update {
+        service_name: s1,
+        decls: vec![Decl::VarDecl {
+            name: y,
+            ty: None,
+            val: Expr::Literal {
+                val: Value::Int { val: 5 },
+            },
+        }],
+    };
+    let watch_stmt = Stmt::Watch {
+        expr: Expr::Variable { name: y },
+    };
+
+    let stmts = vec![s1_stmt, update_stmt, watch_stmt];
+    let res = resolve(&stmts);
+    assert_eq!(res, Err(Error::UnboundVariable { name: y }));
+}

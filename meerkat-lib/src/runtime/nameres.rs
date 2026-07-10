@@ -88,7 +88,11 @@ impl Resolver {
                         name: *service_name,
                     });
                 }
-                self.resolve_service(decls, env)
+                // A child environment is required by the contract of
+                // `resolve_service` for proper hoisting and binding
+                // semantics without leaking names to the outer scope
+                let mut update_env = Env::new(Some(env));
+                self.resolve_service(decls, &mut update_env)
             }
             Stmt::Connect { path: _, addr: _ } => Ok(()),
             Stmt::Import {
@@ -120,6 +124,11 @@ impl Resolver {
     }
 
     /// Resolves service-level declarations using a two-pass approach
+    ///
+    /// WARNING: This method hoists all declarations into the
+    /// provided `env`. Callers must ensure they pass a scoped child
+    /// environment if they intend to encapsulate these declarations
+    /// and avoid leaking them to the outer scope
     ///
     /// Args:
     ///     `decls` (`&[Decl]`): The declarations in the service
