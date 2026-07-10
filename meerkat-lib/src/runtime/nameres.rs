@@ -297,10 +297,10 @@ impl Resolver {
                 Ok(())
             }
             Expr::Action(stmts) => {
-                self.depth += 1;
-                if self.depth > MAX_SCOPE_DEPTH {
+                if self.depth >= MAX_SCOPE_DEPTH {
                     return Err(Error::DepthLimit);
                 }
+                self.depth += 1;
                 let mut action_env = Env::new(Some(env));
                 let res = self.resolve_action_stmts(stmts, &mut action_env);
                 self.depth -= 1;
@@ -384,10 +384,10 @@ impl Resolver {
                 env: _,
                 service_net_id: _,
             } => {
-                self.depth += 1;
-                if self.depth > MAX_SCOPE_DEPTH {
+                if self.depth >= MAX_SCOPE_DEPTH {
                     return Err(Error::DepthLimit);
                 }
+                self.depth += 1;
                 let mut action_env = Env::new(Some(env));
                 let res = self.resolve_action_stmts(stmts, &mut action_env);
                 self.depth -= 1;
@@ -418,10 +418,10 @@ impl Resolver {
         body: &Expr,
         env: &Env<'_, ()>,
     ) -> Result<(), Error> {
-        self.depth += 1;
-        if self.depth > MAX_SCOPE_DEPTH {
+        if self.depth >= MAX_SCOPE_DEPTH {
             return Err(Error::DepthLimit);
         }
+        self.depth += 1;
 
         let mut inner_env = Env::new(Some(env));
         for param in params {
