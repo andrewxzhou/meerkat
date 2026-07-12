@@ -341,9 +341,15 @@ impl Resolver {
                 body,
             } => {
                 self.resolve_expr(iterable, env)?;
+                if self.depth >= MAX_SCOPE_DEPTH {
+                    return Err(Error::DepthLimit);
+                }
+                self.depth += 1;
                 let mut loop_env = Env::new(Some(env));
                 loop_env.bind(*var, ());
-                self.resolve_action_stmts(body, &mut loop_env)
+                let res = self.resolve_action_stmts(body, &mut loop_env);
+                self.depth -= 1;
+                res
             }
         }
     }
@@ -1077,5 +1083,37 @@ mod tests {
                 panic!("Expected UnknownIdentifier error");
             }
         }
+    }
+
+    /// Verify that deeply nested `for` loops trigger the depth limit
+    #[test]
+    fn test_unit_for_loop_depth_limit() {
+        let mut interner = Interner::new();
+        let x = interner.insert("x");
+        let v = interner.insert("v");
+
+        // Create a deeply nested loop structure
+        // We start with a simple expression in the innermost loop
+        let mut deep_stmt = ActionStmt::Expr(Expr::Literal {
+            val: Value::Int { val: 0 },
+        });
+
+        // Nest 130 `for` loops. Since `MAX_SCOPE_DEPTH` is 128, this
+        // must trigger the `DepthLimit` error
+        for _ in 0..130 {
+            deep_stmt = ActionStmt::For {
+                var: x,
+                iterable: Expr::Variable { name: v },
+                body: vec![deep_stmt],
+            };
+        }
+
+        let mut env = Env::new(None);
+        // Bind the iterable variable
+        env.bind(v, ());
+
+        let mut resolver = Resolver::new();
+        let res = resolver.resolve_action_stmt(&deep_stmt, &mut env);
+        assert_eq!(res, Err(Error::DepthLimit));
     }
 }
