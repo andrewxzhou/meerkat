@@ -45,6 +45,13 @@ pub enum Error {
     DepthLimit,
     /// Testing an imported service is not yet supported
     ImportResolutionUnimplemented,
+    /// Updating a service is not yet supported in name resolution
+    UpdateResolutionUnimplemented,
+    /// A value was referenced eagerly before being declared
+    ForwardReference {
+        /// The name of the forward-referenced variable
+        name: Symbol,
+    },
 }
 
 impl fmt::Display for Error {
@@ -73,6 +80,20 @@ impl fmt::Display for Error {
                     f,
                     "Name resolution for imported services \
                      is not yet implemented"
+                )
+            }
+            Error::UpdateResolutionUnimplemented => {
+                write!(
+                    f,
+                    "Name resolution for update statements \
+                     is not yet implemented"
+                )
+            }
+            Error::ForwardReference { name } => {
+                write!(
+                    f,
+                    "Invalid forward reference to uninitialized value '{}'",
+                    name
                 )
             }
         }
@@ -166,27 +187,7 @@ impl Resolver {
     fn resolve_stmt(&mut self, stmt: &Stmt, env: &mut Env<'_, ()>) -> Result<(), Error> {
         match stmt {
             Stmt::ActionStmt(action) => self.resolve_action_stmt(action, env),
-            Stmt::Update {
-                service_name,
-                decls,
-            } => {
-                if env.find(*service_name).is_none() {
-                    return Err(Error::UnknownIdentifier {
-                        name: *service_name,
-                        expected: ExpectedSort::Service,
-                        context_name: self.current_context,
-                    });
-                }
-                let prev_context = self.current_context;
-                self.current_context = Some(*service_name);
-                // A child environment is required by the contract of
-                // `resolve_service` for proper hoisting and binding
-                // semantics without leaking names to the outer scope
-                let mut update_env = Env::new(Some(env));
-                let res = self.resolve_service(decls, &mut update_env);
-                self.current_context = prev_context;
-                res
-            }
+            Stmt::Update { .. } => Err(Error::UpdateResolutionUnimplemented),
             Stmt::Connect { path: _, addr: _ } => Ok(()),
             Stmt::Import {
                 path: _,
@@ -253,45 +254,22 @@ impl Resolver {
     fn resolve_service(&mut self, decls: &[Decl], env: &mut Env<'_, ()>) -> Result<(), Error> {
         for decl in decls {
             match decl {
-                Decl::VarDecl {
-                    name,
-                    ty: _,
-                    val: _,
-                } => {
+                Decl::VarDecl { name, ty: _, val } => {
+                    self.resolve_expr(val, env)?;
                     env.bind(*name, ());
                 }
                 Decl::DefDecl {
                     name,
                     ty: _,
-                    val: _,
+                    val,
                     is_pub: _,
                 } => {
+                    self.resolve_expr(val, env)?;
                     env.bind(*name, ());
                 }
                 Decl::TableDecl { name, fields: _ } => {
                     env.bind(*name, ());
                 }
-            }
-        }
-
-        for decl in decls {
-            match decl {
-                Decl::VarDecl {
-                    name: _,
-                    ty: _,
-                    val,
-                } => {
-                    self.resolve_expr(val, env)?;
-                }
-                Decl::DefDecl {
-                    name: _,
-                    ty: _,
-                    val,
-                    is_pub: _,
-                } => {
-                    self.resolve_expr(val, env)?;
-                }
-                Decl::TableDecl { name: _, fields: _ } => {}
             }
         }
         Ok(())
@@ -390,6 +368,19 @@ impl Resolver {
             }
             Expr::Variable { name } => {
                 if env.find(*name).is_none() {
+                    let is_local_member = self
+                        .current_context
+                        .and_then(|ctx| self.service_members.get(&ctx))
+                        .is_some_and(|members| members.contains(name));
+
+                    if is_local_member {
+                        if self.depth == 0 {
+                            return Err(Error::ForwardReference { name: *name });
+                        } else {
+                            return Ok(());
+                        }
+                    }
+
                     return Err(Error::UnknownIdentifier {
                         name: *name,
                         expected: ExpectedSort::Variable,
@@ -599,9 +590,9 @@ mod tests {
     use crate::runtime::interner::Interner;
     use crate::runtime::tt::Param;
 
-    /// Verify that service-level hoisting allows out-of-order decls
+    /// Verify service rejects eager forward references
     #[test]
-    fn test_unit_service_hoisting_semantics() {
+    fn test_unit_service_rejects_forward_reference() {
         let mut interner = Interner::new();
         let s = interner.insert("s");
         let x = interner.insert("x");
@@ -637,10 +628,10 @@ mod tests {
 
         let mut env = Env::new(None);
         let mut resolver = Resolver::new();
-        assert!(resolver.resolve_stmt(&stmt, &mut env).is_ok());
-
-        // Verify that x and y are now bound in the parent scope
-        assert!(env.find(s).is_some());
+        let program = vec![stmt];
+        let res = resolver.resolve_program(&program, &mut env);
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err(), Error::ForwardReference { name: x });
     }
 
     /// Verify sequential block scoping and declaration-before-use
@@ -880,9 +871,9 @@ mod tests {
         );
     }
 
-    /// Verify update statement declarations hoist internally
+    /// Verify update block returns UpdateResolutionUnimplemented
     #[test]
-    fn test_unit_update_block_scope_resolution() {
+    fn test_unit_update_block_returns_unimplemented() {
         let mut interner = Interner::new();
         let s = interner.insert("s");
         let x = interner.insert("x");
@@ -894,7 +885,6 @@ mod tests {
         };
 
         // update s { def y = x; var x = 5; }
-        // x must hoist within the update block
         let update_stmt = Stmt::Update {
             service_name: s,
             decls: vec![
@@ -916,8 +906,9 @@ mod tests {
 
         let mut env = Env::new(None);
         let mut resolver = Resolver::new();
-        assert!(resolver.resolve_stmt(&s_stmt, &mut env).is_ok());
-        assert!(resolver.resolve_stmt(&update_stmt, &mut env).is_ok());
+        let program = vec![s_stmt, update_stmt];
+        let res = resolver.resolve_program(&program, &mut env);
+        assert_eq!(res, Err(Error::UpdateResolutionUnimplemented));
     }
 
     /// Verify that resolver depth state is recovered on early errors
@@ -1041,7 +1032,10 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::ImportResolutionUnimplemented => {}
-            Error::UnknownIdentifier { .. } | Error::DepthLimit => {
+            Error::UnknownIdentifier { .. }
+            | Error::DepthLimit
+            | Error::UpdateResolutionUnimplemented
+            | Error::ForwardReference { .. } => {
                 panic!("Expected ImportResolutionUnimplemented error");
             }
         }
@@ -1077,7 +1071,10 @@ mod tests {
                 assert_eq!(expected, ExpectedSort::Service);
                 assert_eq!(context_name, None);
             }
-            Error::ImportResolutionUnimplemented | Error::DepthLimit => {
+            Error::ImportResolutionUnimplemented
+            | Error::DepthLimit
+            | Error::UpdateResolutionUnimplemented
+            | Error::ForwardReference { .. } => {
                 panic!("Expected UnknownIdentifier error");
             }
         }

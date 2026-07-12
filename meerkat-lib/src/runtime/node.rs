@@ -70,6 +70,20 @@ impl<'a> Node<'a> {
                 };
                 Error::Message(msg)
             }
+            nameres::Error::ForwardReference { name } => {
+                let name_str = self.interner.get(name);
+                let msg = format!(
+                    "Invalid forward reference to \
+                     uninitialized value '{}'",
+                    name_str
+                );
+                Error::Message(msg)
+            }
+            nameres::Error::UpdateResolutionUnimplemented => Error::Message(
+                "Name resolution for update statements \
+                     is not yet implemented"
+                    .to_string(),
+            ),
             other => Error::Message(other.to_string()),
         })
     }

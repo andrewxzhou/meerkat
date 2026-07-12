@@ -36,9 +36,9 @@ fn test_integration_resolve_valid_service() {
     assert!(res.is_ok());
 }
 
-/// Verify that service-level hoisting allows out-of-order references
+/// Verify eager forward references are rejected in services
 #[test]
-fn test_integration_hoisting_service() {
+fn test_integration_rejects_forward_reference() {
     let mut interner = Interner::new();
     let input = "
         service s1 {
@@ -50,7 +50,9 @@ fn test_integration_hoisting_service() {
     assert!(parse_result.is_ok());
     let stmts = parse_result.unwrap();
     let res = resolve(&stmts);
-    assert!(res.is_ok());
+    assert!(res.is_err());
+    let x = interner.insert("x");
+    assert_eq!(res.unwrap_err(), Error::ForwardReference { name: x });
 }
 
 /// Verify that local let binds shadow service variables in actions
@@ -180,7 +182,7 @@ fn test_integration_watch_unbound() {
     );
 }
 
-/// Verify that update statements resolve existing service names
+/// Verify that update statements resolve with UpdateResolutionUnimplemented error
 #[test]
 fn test_integration_update_stmt() {
     let mut interner = Interner::new();
@@ -205,10 +207,10 @@ fn test_integration_update_stmt() {
 
     let stmts = vec![s1_stmt, update_stmt];
     let res = resolve(&stmts);
-    assert!(res.is_ok());
+    assert_eq!(res, Err(Error::UpdateResolutionUnimplemented));
 }
 
-/// Verify that update on unbound service name triggers error
+/// Verify that update on unbound service name triggers UpdateResolutionUnimplemented
 #[test]
 fn test_integration_update_unbound() {
     let mut interner = Interner::new();
@@ -229,14 +231,7 @@ fn test_integration_update_unbound() {
 
     let stmts = vec![update_stmt];
     let res = resolve(&stmts);
-    assert_eq!(
-        res,
-        Err(Error::UnknownIdentifier {
-            name: s2,
-            expected: ExpectedSort::Service,
-            context_name: None,
-        })
-    );
+    assert_eq!(res, Err(Error::UpdateResolutionUnimplemented));
 }
 
 /// Verify that select expressions validate their table name
@@ -708,9 +703,9 @@ fn test_integration_nested_blocks_let_isolation() {
     );
 }
 
-/// Verify that service update block hoists its declarations
+/// Verify service update block returns UpdateResolutionUnimplemented
 #[test]
-fn test_integration_update_stmt_hoisted_var() {
+fn test_integration_update_stmt_rejects_forward_reference() {
     let mut interner = Interner::new();
     let s1 = interner.insert("s1");
     let x = interner.insert("x");
@@ -741,11 +736,10 @@ fn test_integration_update_stmt_hoisted_var() {
 
     let stmts = vec![s1_stmt, update_stmt];
     let res = resolve(&stmts);
-    assert!(res.is_ok());
+    assert_eq!(res, Err(Error::UpdateResolutionUnimplemented));
 }
 
-/// Verify that variables declared in an update statement do not leak
-/// to the outer scope
+/// Verify service update block returns UpdateResolutionUnimplemented
 #[test]
 fn test_integration_update_stmt_scoping() {
     let mut interner = Interner::new();
@@ -772,14 +766,7 @@ fn test_integration_update_stmt_scoping() {
 
     let stmts = vec![s1_stmt, update_stmt, watch_stmt];
     let res = resolve(&stmts);
-    assert_eq!(
-        res,
-        Err(Error::UnknownIdentifier {
-            name: y,
-            expected: ExpectedSort::Variable,
-            context_name: None,
-        })
-    );
+    assert_eq!(res, Err(Error::UpdateResolutionUnimplemented));
 }
 
 /// Verify that `@test` blocks can resolve variables
@@ -846,7 +833,10 @@ fn test_integration_test_block_imported_unsupported() {
     assert!(res.is_err());
     match res.unwrap_err() {
         Error::ImportResolutionUnimplemented => {}
-        Error::UnknownIdentifier { .. } | Error::DepthLimit => {
+        Error::UnknownIdentifier { .. }
+        | Error::DepthLimit
+        | Error::UpdateResolutionUnimplemented
+        | Error::ForwardReference { .. } => {
             panic!("Expected ImportResolutionUnimplemented error");
         }
     }
