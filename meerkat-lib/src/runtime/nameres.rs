@@ -23,6 +23,7 @@
 
 use crate::runtime::ast::{ActionStmt, Decl, Expr, Stmt, Value};
 use crate::runtime::interner::Symbol;
+use crate::runtime::limits::MAX_SCOPE_DEPTH;
 use crate::runtime::tt::Param;
 use crate::runtime::Env;
 use std::collections::{HashMap, HashSet};
@@ -228,14 +229,14 @@ impl<'a> Resolver<'a> {
                         for param in params {
                             inner_env.bind(param.name, Binding::Value);
                         }
-                        self.resolve_expr(body, &inner_env)?;
+                        self.resolve_expr(body, &inner_env, 0)?;
                     } else {
-                        self.resolve_expr(body, &thunk.env)?;
+                        self.resolve_expr(body, &thunk.env, 0)?;
                     }
                 }
                 ThunkBody::ActionStmts(stmts) => {
                     let mut action_env = Env::new(Some(&thunk.env));
-                    self.resolve_action_stmts(stmts, &mut action_env)?;
+                    self.resolve_action_stmts(stmts, &mut action_env, 0)?;
                 }
             }
             self.current_context = prev_context;
@@ -259,7 +260,7 @@ impl<'a> Resolver<'a> {
         env: &mut Env<'b, Binding<'a>>,
     ) -> Result<(), Error> {
         match stmt {
-            Stmt::ActionStmt(action) => self.resolve_action_stmt(action, env),
+            Stmt::ActionStmt(action) => self.resolve_action_stmt(action, env, 0),
             Stmt::Update { .. } => {
                 println!(
                     "warning: nameres: ignoring 'update' \
@@ -319,7 +320,7 @@ impl<'a> Resolver<'a> {
                     }
                 }
                 if self.in_deferred_phase {
-                    self.resolve_action_stmts(stmts, &mut test_env)?;
+                    self.resolve_action_stmts(stmts, &mut test_env, 0)?;
                 } else {
                     self.thunks.push(Thunk {
                         params: None,
@@ -331,7 +332,7 @@ impl<'a> Resolver<'a> {
                 self.current_context = prev_context;
                 Ok(())
             }
-            Stmt::Watch { expr } => self.resolve_expr(expr, env),
+            Stmt::Watch { expr } => self.resolve_expr(expr, env, 0),
         }
     }
 
@@ -364,7 +365,7 @@ impl<'a> Resolver<'a> {
                         },
                         _ => Binding::Value,
                     };
-                    self.resolve_expr(val, env)?;
+                    self.resolve_expr(val, env, 0)?;
                     env.bind(*name, info);
                 }
                 Decl::DefDecl {
@@ -384,7 +385,7 @@ impl<'a> Resolver<'a> {
                         },
                         _ => Binding::Value,
                     };
-                    self.resolve_expr(val, env)?;
+                    self.resolve_expr(val, env, 0)?;
                     env.bind(*name, info);
                 }
                 Decl::TableDecl { name, fields: _ } => {
@@ -411,37 +412,40 @@ impl<'a> Resolver<'a> {
         &mut self,
         stmts: &'a [ActionStmt],
         env: &mut Env<'b, Binding<'a>>,
+        depth: usize,
     ) -> Result<(), Error> {
         for stmt in stmts {
-            self.resolve_action_stmt(stmt, env)?;
+            self.resolve_action_stmt(stmt, env, depth)?;
         }
         Ok(())
     }
 
     /// Resolves a single action statement
     ///
-    /// Note that table operations are currently ignored and emit warnings
-    ///
     /// Args:
     ///     `stmt` (`&'a ActionStmt`): The action statement to resolve
     ///     `env` (`&mut Env<'b, Binding<'a>>`): The environment
     ///
     /// Returns:
-    ///     `Result<(), Error>`: `Ok` if resolution succeeds, or `Error`
+    ///     `Result<(), Error>`: Ok if resolution succeeds, or `Error`
     fn resolve_action_stmt<'b>(
         &mut self,
         stmt: &'a ActionStmt,
         env: &mut Env<'b, Binding<'a>>,
+        depth: usize,
     ) -> Result<(), Error> {
+        if depth >= MAX_SCOPE_DEPTH {
+            return Err(Error::DepthLimit);
+        }
         match stmt {
             ActionStmt::Let { name, ty: _, expr } => {
-                self.resolve_expr(expr, env)?;
+                self.resolve_expr(expr, env, depth + 1)?;
                 env.bind(*name, Binding::Value);
                 Ok(())
             }
-            ActionStmt::Expr(expr) => self.resolve_expr(expr, env),
-            ActionStmt::Do(expr) => self.force_resolve(expr, env),
-            ActionStmt::Assert(expr, _text) => self.resolve_expr(expr, env),
+            ActionStmt::Expr(expr) => self.resolve_expr(expr, env, depth + 1),
+            ActionStmt::Do(expr) => self.force_resolve(expr, env, depth + 1),
+            ActionStmt::Assert(expr, _text) => self.resolve_expr(expr, env, depth + 1),
             ActionStmt::Assign { name, expr } => {
                 if env.find(*name).is_none() {
                     let is_local_member = self
@@ -467,7 +471,7 @@ impl<'a> Resolver<'a> {
                         });
                     }
                 }
-                self.resolve_expr(expr, env)
+                self.resolve_expr(expr, env, depth + 1)
             }
             ActionStmt::Insert {
                 row: _,
@@ -484,10 +488,10 @@ impl<'a> Resolver<'a> {
                 iterable,
                 body,
             } => {
-                self.resolve_expr(iterable, env)?;
+                self.resolve_expr(iterable, env, depth + 1)?;
                 let mut loop_env = Env::new(Some(env));
                 loop_env.bind(*var, Binding::Value);
-                self.resolve_action_stmts(body, &mut loop_env)
+                self.resolve_action_stmts(body, &mut loop_env, depth + 1)
             }
         }
     }
@@ -504,6 +508,7 @@ impl<'a> Resolver<'a> {
         &mut self,
         expr: &'a Expr,
         env: &Env<'b, Binding<'a>>,
+        depth: usize,
     ) -> Result<(), Error> {
         match expr {
             Expr::Func { params, body, .. } => {
@@ -511,11 +516,11 @@ impl<'a> Resolver<'a> {
                 for param in params {
                     inner_env.bind(param.name, Binding::Value);
                 }
-                self.resolve_expr(body.as_ref(), &inner_env)
+                self.resolve_expr(body.as_ref(), &inner_env, depth + 1)
             }
             Expr::Action(stmts) => {
                 let mut action_env = Env::new(Some(env));
-                self.resolve_action_stmts(stmts, &mut action_env)
+                self.resolve_action_stmts(stmts, &mut action_env, depth + 1)
             }
             Expr::Variable { name } => {
                 if self.currently_evaluating.contains(name) {
@@ -530,43 +535,45 @@ impl<'a> Resolver<'a> {
                                 for param in *params {
                                     inner_env.bind(param.name, Binding::Value);
                                 }
-                                self.resolve_expr(body, &inner_env)
+                                self.resolve_expr(body, &inner_env, depth + 1)
                             } else {
-                                self.resolve_expr(body, decl_env)
+                                self.resolve_expr(body, decl_env, depth + 1)
                             }
                         }
                         Binding::Value => Ok(()),
                     }
                 } else {
-                    self.resolve_expr(expr, env)
+                    self.resolve_expr(expr, env, depth + 1)
                 };
                 self.currently_evaluating.remove(name);
                 res
             }
-            _ => self.resolve_expr(expr, env),
+            _ => self.resolve_expr(expr, env, depth + 1),
         }
     }
 
     /// Resolves variable names within an expression
-    ///
-    /// Note that table operations are currently ignored and emit warnings
     ///
     /// Args:
     ///     `expr` (`&'a Expr`): The expression to resolve
     ///     `env` (`&Env<'b, Binding<'a>>`): The environment
     ///
     /// Returns:
-    ///     `Result<(), Error>`: `Ok` if resolution succeeds, or `Error`
+    ///     `Result<(), Error>`: Ok if resolution succeeds, or `Error`
     fn resolve_expr<'b>(
         &mut self,
         expr: &'a Expr,
         env: &Env<'b, Binding<'a>>,
+        depth: usize,
     ) -> Result<(), Error> {
+        if depth >= MAX_SCOPE_DEPTH {
+            return Err(Error::DepthLimit);
+        }
         match expr {
-            Expr::Literal { val } => self.resolve_value(val, env),
+            Expr::Literal { val } => self.resolve_value(val, env, depth + 1),
             Expr::Html(template) => {
                 for e in template.embedded_exprs() {
-                    self.resolve_expr(e, env)?;
+                    self.resolve_expr(e, env, depth + 1)?;
                 }
                 Ok(())
             }
@@ -601,24 +608,24 @@ impl<'a> Resolver<'a> {
             }
             Expr::Tuple { val } => {
                 for e in val {
-                    self.resolve_expr(e, env)?;
+                    self.resolve_expr(e, env, depth + 1)?;
                 }
                 Ok(())
             }
-            Expr::KeyVal { name: _, value } => self.resolve_expr(value.as_ref(), env),
-            Expr::Unop { op: _, expr } => self.resolve_expr(expr.as_ref(), env),
+            Expr::KeyVal { name: _, value } => self.resolve_expr(value.as_ref(), env, depth + 1),
+            Expr::Unop { op: _, expr } => self.resolve_expr(expr.as_ref(), env, depth + 1),
             Expr::Binop {
                 op: _,
                 expr1,
                 expr2,
             } => {
-                self.resolve_expr(expr1.as_ref(), env)?;
-                self.resolve_expr(expr2.as_ref(), env)
+                self.resolve_expr(expr1.as_ref(), env, depth + 1)?;
+                self.resolve_expr(expr2.as_ref(), env, depth + 1)
             }
             Expr::If { cond, expr1, expr2 } => {
-                self.resolve_expr(cond.as_ref(), env)?;
-                self.resolve_expr(expr1.as_ref(), env)?;
-                self.resolve_expr(expr2.as_ref(), env)
+                self.resolve_expr(cond.as_ref(), env, depth + 1)?;
+                self.resolve_expr(expr1.as_ref(), env, depth + 1)?;
+                self.resolve_expr(expr2.as_ref(), env, depth + 1)
             }
             Expr::Func {
                 params,
@@ -630,7 +637,7 @@ impl<'a> Resolver<'a> {
                     for param in params {
                         inner_env.bind(param.name, Binding::Value);
                     }
-                    self.resolve_expr(body.as_ref(), &inner_env)?;
+                    self.resolve_expr(body.as_ref(), &inner_env, depth + 1)?;
                 } else {
                     self.thunks.push(Thunk {
                         params: Some(params.clone()),
@@ -642,16 +649,16 @@ impl<'a> Resolver<'a> {
                 Ok(())
             }
             Expr::Call { func, args } => {
-                self.force_resolve(func.as_ref(), env)?;
+                self.force_resolve(func.as_ref(), env, depth + 1)?;
                 for arg in args {
-                    self.resolve_expr(arg, env)?;
+                    self.resolve_expr(arg, env, depth + 1)?;
                 }
                 Ok(())
             }
             Expr::Action(stmts) => {
                 if self.in_deferred_phase {
                     let mut action_env = Env::new(Some(env));
-                    self.resolve_action_stmts(stmts, &mut action_env)?;
+                    self.resolve_action_stmts(stmts, &mut action_env, depth + 1)?;
                 } else {
                     self.thunks.push(Thunk {
                         params: None,
@@ -701,7 +708,7 @@ impl<'a> Resolver<'a> {
             }
             Expr::Table { schema: _, records } => {
                 for r in records {
-                    self.resolve_expr(r, env)?;
+                    self.resolve_expr(r, env, depth + 1)?;
                 }
                 Ok(())
             }
@@ -719,13 +726,13 @@ impl<'a> Resolver<'a> {
             }
             Expr::List(exprs) => {
                 for expr in exprs {
-                    self.resolve_expr(expr, env)?;
+                    self.resolve_expr(expr, env, depth + 1)?;
                 }
                 Ok(())
             }
             Expr::Range { start, end } => {
-                self.resolve_expr(start.as_ref(), env)?;
-                self.resolve_expr(end.as_ref(), env)
+                self.resolve_expr(start.as_ref(), env, depth + 1)?;
+                self.resolve_expr(end.as_ref(), env, depth + 1)
             }
         }
     }
@@ -742,7 +749,11 @@ impl<'a> Resolver<'a> {
         &mut self,
         val: &'a Value,
         env: &Env<'b, Binding<'a>>,
+        depth: usize,
     ) -> Result<(), Error> {
+        if depth >= MAX_SCOPE_DEPTH {
+            return Err(Error::DepthLimit);
+        }
         match val {
             Value::Int { val: _ } => Ok(()),
             Value::Bool { val: _ } => Ok(()),
@@ -760,7 +771,7 @@ impl<'a> Resolver<'a> {
                     for param in params {
                         inner_env.bind(param.name, Binding::Value);
                     }
-                    self.resolve_expr(body.as_ref(), &inner_env)?;
+                    self.resolve_expr(body.as_ref(), &inner_env, depth + 1)?;
                 } else {
                     self.thunks.push(Thunk {
                         params: Some(params.clone()),
@@ -778,7 +789,7 @@ impl<'a> Resolver<'a> {
             } => {
                 if self.in_deferred_phase {
                     let mut action_env = Env::new(Some(env));
-                    self.resolve_action_stmts(stmts, &mut action_env)?;
+                    self.resolve_action_stmts(stmts, &mut action_env, depth + 1)?;
                 } else {
                     self.thunks.push(Thunk {
                         params: None,
@@ -791,7 +802,7 @@ impl<'a> Resolver<'a> {
             }
             Value::List { vals } => {
                 for val in vals {
-                    self.resolve_value(val, env)?;
+                    self.resolve_value(val, env, depth + 1)?;
                 }
                 Ok(())
             }
@@ -1237,5 +1248,64 @@ mod tests {
                 panic!("Expected UnknownIdentifier error");
             }
         }
+    }
+
+    /// Verify that deeply nested expressions trigger the depth limit
+    #[test]
+    fn test_unit_expression_depth_limit() {
+        let mut interner = Interner::new();
+        let x = interner.insert("x");
+
+        // Create a deeply nested expression structure
+        // Start with a simple variable expression
+        let mut deep_expr = Expr::Variable { name: x };
+
+        // Nest 130 binary operations to trigger depth limit error
+        for _ in 0..130 {
+            deep_expr = Expr::Binop {
+                op: crate::runtime::ast::BinOp::Add,
+                expr1: Box::new(deep_expr),
+                expr2: Box::new(Expr::Literal {
+                    val: Value::Int { val: 1 },
+                }),
+            };
+        }
+
+        let mut env = Env::new(None);
+        env.bind(x, Binding::Value);
+
+        let mut resolver = Resolver::new();
+        let res = resolver.resolve_expr(&deep_expr, &env, 0);
+        assert_eq!(res, Err(Error::DepthLimit))
+    }
+
+    /// Verify that deeply nested action statements trigger the depth limit
+    #[test]
+    fn test_unit_for_loop_depth_limit() {
+        let mut interner = Interner::new();
+        let x = interner.insert("x");
+        let v = interner.insert("v");
+
+        // Create a deeply nested loop structure
+        // Start with a simple expression in the innermost loop
+        let mut deep_stmt = ActionStmt::Expr(Expr::Literal {
+            val: Value::Int { val: 0 },
+        });
+
+        // Nest 130 for loops to trigger depth limit error
+        for _ in 0..130 {
+            deep_stmt = ActionStmt::For {
+                var: x,
+                iterable: Expr::Variable { name: v },
+                body: vec![deep_stmt],
+            };
+        }
+
+        let mut env = Env::new(None);
+        env.bind(v, Binding::Value);
+
+        let mut resolver = Resolver::new();
+        let res = resolver.resolve_action_stmt(&deep_stmt, &mut env, 0);
+        assert_eq!(res, Err(Error::DepthLimit))
     }
 }
