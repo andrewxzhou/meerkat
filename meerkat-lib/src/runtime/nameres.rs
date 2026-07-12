@@ -1,7 +1,25 @@
 //! Static name resolution analysis for the Meerkat language compiler
 //!
-//! This module resolves and validates all variable usages in abstract
+//! This module resolves and validates variable usages in abstract
 //! syntax trees, failing defensively if an unbound symbol is accessed
+//!
+//! In accordance with `Issue #34`, the compiler is currently restricted
+//! to local file checks without full multi-file import resolution
+//! Several features have not yet been fully introduced to the system
+//! Rather than raising errors and blocking development, checks for
+//! these operations are deferred and emit warnings to indicate they
+//! are under active development
+//!
+//! Note that variables referring to table types are still resolved to
+//! register their declarations in the environment
+//!
+//! The currently skipped operations are listed below
+//! - Service `update` statements
+//! - Service `import` declarations
+//! - `TableDecl` declarations
+//! - `Insert` statements
+//! - `Select` expressions
+//! - `Fold` expressions
 
 use crate::runtime::ast::{ActionStmt, Decl, Expr, Stmt, Value};
 use crate::runtime::interner::Symbol;
@@ -319,12 +337,14 @@ impl<'a> Resolver<'a> {
 
     /// Resolves service-level declarations sequentially
     ///
+    /// Note that `TableDecl` is registered but its schema is not verified
+    ///
     /// Args:
     ///     `decls` (`&'a [Decl]`): The declarations in the service
     ///     `env` (`&mut Env<'b, Binding<'a>>`): The environment
     ///
     /// Returns:
-    ///     `Result<(), Error>`: Ok if resolution succeeds, or `Error`
+    ///     `Result<(), Error>`: `Ok` if resolution succeeds, or `Error`
     fn resolve_service<'b>(
         &mut self,
         decls: &'a [Decl],
@@ -368,6 +388,10 @@ impl<'a> Resolver<'a> {
                     env.bind(*name, info);
                 }
                 Decl::TableDecl { name, fields: _ } => {
+                    println!(
+                        "warning: nameres: ignoring 'table' schema \
+                         checks as not yet implemented"
+                    );
                     env.bind(*name, Binding::Value);
                 }
             }
@@ -396,12 +420,14 @@ impl<'a> Resolver<'a> {
 
     /// Resolves a single action statement
     ///
+    /// Note that table operations are currently ignored and emit warnings
+    ///
     /// Args:
     ///     `stmt` (`&'a ActionStmt`): The action statement to resolve
     ///     `env` (`&mut Env<'b, Binding<'a>>`): The environment
     ///
     /// Returns:
-    ///     `Result<(), Error>`: Ok if resolution succeeds, or `Error`
+    ///     `Result<(), Error>`: `Ok` if resolution succeeds, or `Error`
     fn resolve_action_stmt<'b>(
         &mut self,
         stmt: &'a ActionStmt,
@@ -443,15 +469,15 @@ impl<'a> Resolver<'a> {
                 }
                 self.resolve_expr(expr, env)
             }
-            ActionStmt::Insert { row, table_name } => {
-                if env.find(*table_name).is_none() {
-                    return Err(Error::UnknownIdentifier {
-                        name: *table_name,
-                        expected: ExpectedSort::Table,
-                        context_name: self.current_context,
-                    });
-                }
-                self.resolve_expr(row, env)
+            ActionStmt::Insert {
+                row: _,
+                table_name: _,
+            } => {
+                println!(
+                    "warning: nameres: ignoring 'insert' checks \
+                     as not yet implemented"
+                );
+                Ok(())
             }
             ActionStmt::For {
                 var,
@@ -523,12 +549,14 @@ impl<'a> Resolver<'a> {
 
     /// Resolves variable names within an expression
     ///
+    /// Note that table operations are currently ignored and emit warnings
+    ///
     /// Args:
     ///     `expr` (`&'a Expr`): The expression to resolve
     ///     `env` (`&Env<'b, Binding<'a>>`): The environment
     ///
     /// Returns:
-    ///     `Result<(), Error>`: Ok if resolution succeeds, or `Error`
+    ///     `Result<(), Error>`: `Ok` if resolution succeeds, or `Error`
     fn resolve_expr<'b>(
         &mut self,
         expr: &'a Expr,
@@ -661,18 +689,15 @@ impl<'a> Resolver<'a> {
                 Ok(())
             }
             Expr::Select {
-                table_name,
+                table_name: _,
                 column_names: _,
-                where_clause,
+                where_clause: _,
             } => {
-                if env.find(*table_name).is_none() {
-                    return Err(Error::UnknownIdentifier {
-                        name: *table_name,
-                        expected: ExpectedSort::Table,
-                        context_name: self.current_context,
-                    });
-                }
-                self.resolve_expr(where_clause.as_ref(), env)
+                println!(
+                    "warning: nameres: ignoring 'select' checks \
+                     as not yet implemented"
+                );
+                Ok(())
             }
             Expr::Table { schema: _, records } => {
                 for r in records {
@@ -681,20 +706,16 @@ impl<'a> Resolver<'a> {
                 Ok(())
             }
             Expr::Fold {
-                table_name,
+                table_name: _,
                 column_name: _,
-                operation,
-                identity,
+                operation: _,
+                identity: _,
             } => {
-                if env.find(*table_name).is_none() {
-                    return Err(Error::UnknownIdentifier {
-                        name: *table_name,
-                        expected: ExpectedSort::Table,
-                        context_name: self.current_context,
-                    });
-                }
-                self.resolve_expr(operation.as_ref(), env)?;
-                self.resolve_expr(identity.as_ref(), env)
+                println!(
+                    "warning: nameres: ignoring 'fold' checks \
+                     as not yet implemented"
+                );
+                Ok(())
             }
             Expr::List(exprs) => {
                 for expr in exprs {

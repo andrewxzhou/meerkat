@@ -329,7 +329,7 @@ fn test_integration_insert_stmt() {
     assert!(res.is_ok());
 }
 
-/// Verify that insert statement with unbound table triggers error
+/// Verify that insert statement with unbound table is ignored with warning
 #[test]
 fn test_integration_insert_unbound() {
     let mut interner = Interner::new();
@@ -344,16 +344,7 @@ fn test_integration_insert_unbound() {
     assert!(parse_result.is_ok());
     let stmts = parse_result.unwrap();
     let res = resolve(&stmts);
-    let s1 = interner.insert("s1");
-    let t2 = interner.insert("t2");
-    assert_eq!(
-        res,
-        Err(Error::UnknownIdentifier {
-            name: t2,
-            expected: ExpectedSort::Table,
-            context_name: Some(s1),
-        })
-    );
+    assert!(res.is_ok());
 }
 
 /// Verify that insert statement row variables are resolved
