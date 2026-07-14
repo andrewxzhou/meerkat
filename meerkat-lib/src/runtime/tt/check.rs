@@ -469,11 +469,11 @@ impl<'a, 'b> Context<'a, 'b> {
                 if val.is_empty() {
                     Ok(())
                 } else {
+                    let types = val.iter().map(|_| Type::Unit).collect();
+                    let tuple_ty = TupleType::new(types).map_err(|_| Error::InvalidTupleArity)?;
                     Err(Error::TypeMismatch {
                         expected: Type::Unit,
-                        found: Type::Tuple(
-                            TupleType::new(val.iter().map(|_| Type::Unit).collect()).unwrap(),
-                        ),
+                        found: Type::Tuple(tuple_ty),
                     })
                 }
             }
@@ -510,12 +510,12 @@ impl<'a, 'b> Context<'a, 'b> {
                             local_env.bind(param.name, ts[i].clone());
                         }
                     } else {
+                        let types = params.iter().map(|_| Type::Unit).collect();
+                        let tuple_ty =
+                            TupleType::new(types).map_err(|_| Error::InvalidTupleArity)?;
                         return Err(Error::TypeMismatch {
                             expected: (**expected_param).clone(),
-                            found: Type::Tuple(
-                                TupleType::new(params.iter().map(|_| Type::Unit).collect())
-                                    .unwrap(),
-                            ),
+                            found: Type::Tuple(tuple_ty),
                         });
                     }
                 }
@@ -616,7 +616,9 @@ impl<'a, 'b> Context<'a, 'b> {
                     } else if param_types.len() == 1 {
                         param_types[0].clone()
                     } else {
-                        Type::Tuple(TupleType::new(param_types).unwrap())
+                        let tuple_ty =
+                            TupleType::new(param_types).map_err(|_| Error::InvalidTupleArity)?;
+                        Type::Tuple(tuple_ty)
                     };
                     let r_ty = if let Some(annotated_ret) = return_ty {
                         check_type(annotated_ret, 1)?;
@@ -650,7 +652,8 @@ impl<'a, 'b> Context<'a, 'b> {
                     for elem in val {
                         types.push(self.infer(elem, env, type_depth + 1)?);
                     }
-                    Ok(Type::Tuple(TupleType::new(types).unwrap()))
+                    let tuple_ty = TupleType::new(types).map_err(|_| Error::InvalidTupleArity)?;
+                    Ok(Type::Tuple(tuple_ty))
                 }
             }
             Expr::KeyVal { value, .. } => self.infer(value, env, type_depth),
@@ -713,7 +716,9 @@ impl<'a, 'b> Context<'a, 'b> {
                 } else if param_types.len() == 1 {
                     param_types[0].clone()
                 } else {
-                    Type::Tuple(TupleType::new(param_types).unwrap())
+                    let tuple_ty =
+                        TupleType::new(param_types).map_err(|_| Error::InvalidTupleArity)?;
+                    Type::Tuple(tuple_ty)
                 };
                 let r_ty = if let Some(annotated_ret) = return_ty {
                     check_type(annotated_ret, 1)?;
@@ -745,12 +750,12 @@ impl<'a, 'b> Context<'a, 'b> {
                                 self.check_expr(arg, &ts[i], env)?;
                             }
                         } else {
+                            let types = args.iter().map(|_| Type::Unit).collect();
+                            let tuple_ty =
+                                TupleType::new(types).map_err(|_| Error::InvalidTupleArity)?;
                             return Err(Error::TypeMismatch {
                                 expected: *param_ty,
-                                found: Type::Tuple(
-                                    TupleType::new(args.iter().map(|_| Type::Unit).collect())
-                                        .unwrap(),
-                                ),
+                                found: Type::Tuple(tuple_ty),
                             });
                         }
                     }

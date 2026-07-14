@@ -753,3 +753,26 @@ fn test_tuple_single_element_inference() {
     let res = check(&program, &mut classes);
     assert_eq!(res, Err(Error::InvalidTupleArity))
 }
+
+/// Verify tuple with single element is checked against Type::Unit
+/// and rejected
+#[test]
+fn test_tuple_single_element_checking() {
+    let mut classes = Env::new(None);
+    let mut interner = Interner::new();
+    let name_s = interner.insert("s");
+    let program = vec![Stmt::Service {
+        name: name_s,
+        decls: vec![Decl::VarDecl {
+            name: interner.insert("t"),
+            ty: Some(Type::Unit),
+            val: Expr::Tuple {
+                val: vec![Expr::Literal {
+                    val: Value::Int { val: 1 },
+                }],
+            },
+        }],
+    }];
+    let res = check(&program, &mut classes);
+    assert_eq!(res, Err(Error::InvalidTupleArity))
+}
