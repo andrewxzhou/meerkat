@@ -46,7 +46,7 @@
 
 use crate::runtime::ast::{ActionStmt, BinOp, Decl, Expr, Stmt, UnOp, Value};
 use crate::runtime::interner::Symbol;
-use crate::runtime::tt::types::{ServiceType, TupleType, Type};
+use crate::runtime::tt::types::{Param, ServiceType, TupleType, Type};
 use crate::runtime::Env;
 
 /// Validate the structural depth of a type representation
@@ -596,64 +596,13 @@ impl<'a, 'b> Context<'a, 'b> {
         self.inc_depth()?;
         let res = match expr {
             Expr::Literal { val } => match val {
-                Value::Int { .. } => Ok(Type::Int),
-                Value::Bool { .. } => Ok(Type::Bool),
-                Value::String { .. } => Ok(Type::String),
-                Value::Html { .. } => Ok(Type::String),
-                Value::List { vals } => {
-                    if vals.is_empty() {
-                        Err(Error::CannotInferType)
-                    } else {
-                        let inner = self.infer_value(&vals[0], type_depth + 1)?;
-                        for v in vals {
-                            let v_ty = self.infer_value(v, type_depth + 1)?;
-                            if v_ty != inner {
-                                return Err(Error::TypeMismatch {
-                                    expected: inner,
-                                    found: v_ty,
-                                });
-                            }
-                        }
-                        Ok(Type::List(Box::new(inner)))
-                    }
-                }
-                Value::Range { .. } => Ok(Type::List(Box::new(Type::Int))),
                 Value::Closure {
                     params,
                     body,
                     return_ty,
                     ..
-                } => {
-                    let mut local_env = Env::new(Some(env));
-                    let mut param_types = Vec::new();
-                    for param in params {
-                        if let Some(p_ty) = &param.ty {
-                            check_type(p_ty, 1)?;
-                            local_env.bind(param.name, p_ty.clone());
-                            param_types.push(p_ty.clone());
-                        } else {
-                            return Err(Error::CannotInferType);
-                        }
-                    }
-                    let p_ty = if param_types.is_empty() {
-                        Type::Unit
-                    } else if param_types.len() == 1 {
-                        param_types[0].clone()
-                    } else {
-                        let tuple_ty =
-                            TupleType::new(param_types).map_err(|_| Error::InvalidTupleArity)?;
-                        Type::Tuple(tuple_ty)
-                    };
-                    let r_ty = if let Some(annotated_ret) = return_ty {
-                        check_type(annotated_ret, 1)?;
-                        self.check_expr(body, annotated_ret, &mut local_env)?;
-                        annotated_ret.clone()
-                    } else {
-                        self.infer(body, &mut local_env, type_depth + 1)?
-                    };
-                    Ok(Type::Func(Box::new(p_ty), Box::new(r_ty)))
-                }
-                _ => Err(Error::CannotInferType),
+                } => self.infer_function_type(params, body, return_ty.as_ref(), env, type_depth),
+                _ => self.infer_value(val, type_depth),
             },
             Expr::Html(_) => Ok(Type::String),
             Expr::Variable { name } => {
@@ -723,36 +672,7 @@ impl<'a, 'b> Context<'a, 'b> {
                 params,
                 body,
                 return_ty,
-            } => {
-                let mut local_env = Env::new(Some(env));
-                let mut param_types = Vec::new();
-                for param in params {
-                    if let Some(p_ty) = &param.ty {
-                        check_type(p_ty, 1)?;
-                        local_env.bind(param.name, p_ty.clone());
-                        param_types.push(p_ty.clone());
-                    } else {
-                        return Err(Error::CannotInferType);
-                    }
-                }
-                let p_ty = if param_types.is_empty() {
-                    Type::Unit
-                } else if param_types.len() == 1 {
-                    param_types[0].clone()
-                } else {
-                    let tuple_ty =
-                        TupleType::new(param_types).map_err(|_| Error::InvalidTupleArity)?;
-                    Type::Tuple(tuple_ty)
-                };
-                let r_ty = if let Some(annotated_ret) = return_ty {
-                    check_type(annotated_ret, 1)?;
-                    self.check_expr(body, annotated_ret, &mut local_env)?;
-                    annotated_ret.clone()
-                } else {
-                    self.infer(body, &mut local_env, type_depth + 1)?
-                };
-                Ok(Type::Func(Box::new(p_ty), Box::new(r_ty)))
-            }
+            } => self.infer_function_type(params, body, return_ty.as_ref(), env, type_depth),
             Expr::Call { func, args } => {
                 let func_ty = self.infer(func, env, 1)?;
                 if let Type::Func(param_ty, ret_ty) = func_ty {
@@ -821,6 +741,58 @@ impl<'a, 'b> Context<'a, 'b> {
         };
         self.dec_depth();
         res
+    }
+
+    /// Infer the type of a function or closure
+    ///
+    /// Args:
+    ///     `params` (`&[Param]`): The function `Param` list
+    ///     `body` (`&Expr`): The function body `Expr`
+    ///     `return_ty` (`Option<&Type>`): The optional return
+    ///         `Type` annotation
+    ///     `env` (`&mut Env<'_, Type>`): The local `Env` environment
+    ///     `type_depth` (`usize`): The current type depth
+    ///
+    /// Returns:
+    ///     `Result<Type, Error>`: The inferred function `Type`
+    ///
+    /// Raises:
+    ///     `Error`: If type check fails or recursion limit exceeded
+    fn infer_function_type(
+        &mut self,
+        params: &[Param],
+        body: &Expr,
+        return_ty: Option<&Type>,
+        env: &mut Env<'_, Type>,
+        type_depth: usize,
+    ) -> Result<Type, Error> {
+        let mut local_env = Env::new(Some(env));
+        let mut param_types = Vec::new();
+        for param in params {
+            if let Some(p_ty) = &param.ty {
+                check_type(p_ty, 1)?;
+                local_env.bind(param.name, p_ty.clone());
+                param_types.push(p_ty.clone());
+            } else {
+                return Err(Error::CannotInferType);
+            }
+        }
+        let p_ty = if param_types.is_empty() {
+            Type::Unit
+        } else if param_types.len() == 1 {
+            param_types[0].clone()
+        } else {
+            let tuple_ty = TupleType::new(param_types).map_err(|_| Error::InvalidTupleArity)?;
+            Type::Tuple(tuple_ty)
+        };
+        let r_ty = if let Some(annotated_ret) = return_ty {
+            check_type(annotated_ret, 1)?;
+            self.check_expr(body, annotated_ret, &mut local_env)?;
+            annotated_ret.clone()
+        } else {
+            self.infer(body, &mut local_env, type_depth + 1)?
+        };
+        Ok(Type::Func(Box::new(p_ty), Box::new(r_ty)))
     }
 
     /// Helper to infer type from Value literals directly
