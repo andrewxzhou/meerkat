@@ -11,15 +11,39 @@ fn test_empty_program() {
     assert!(res.is_ok())
 }
 
-/// Verify that type depth calculations match expectations
+/// Verify that type depth verification works as expected
 #[test]
 fn test_type_depth_calculation() {
-    assert_eq!(type_depth(&Type::Int), 1);
+    assert!(check_type(&Type::Int, 1).is_ok());
     let func = Type::Func(
         Box::new(Type::Int),
         Box::new(Type::Func(Box::new(Type::Bool), Box::new(Type::String))),
     );
-    assert_eq!(type_depth(&func), 3)
+    assert!(check_type(&func, 1).is_ok());
+}
+
+/// Verify that pathologically deep type annotations are rejected
+#[test]
+fn test_deep_annotation_rejected() {
+    let mut interner = Interner::new();
+    let name_s = interner.insert("my_service");
+    let var_x = interner.insert("x");
+    let mut deep_ty = Type::Int;
+    for _ in 0..17 {
+        deep_ty = Type::List(Box::new(deep_ty));
+    }
+    let decls = vec![Decl::VarDecl {
+        name: var_x,
+        ty: Some(deep_ty),
+        val: Expr::List(vec![]),
+    }];
+    let program = vec![Stmt::Service {
+        name: name_s,
+        decls,
+    }];
+    let mut classes = Env::new(None);
+    let res = check(&program, &mut classes);
+    assert_eq!(res, Err(Error::DepthLimitExceeded));
 }
 
 /// Verify basic primitive assignments

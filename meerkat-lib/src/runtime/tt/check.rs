@@ -49,22 +49,35 @@ use crate::runtime::interner::Symbol;
 use crate::runtime::tt::types::{ServiceType, TupleType, Type};
 use crate::runtime::Env;
 
-/// Helper to calculate the nesting depth of a type representation
+/// Validate the structural depth of a type representation
 ///
 /// Args:
 ///     ty (&Type): The type to evaluate
+///     depth (usize): The current depth in the type tree
 ///
 /// Returns:
-///     usize: The maximum nesting depth of the type structure
-fn type_depth(ty: &Type) -> usize {
+///     Result<(), Error>: Ok if depth limits are not exceeded
+///
+/// Raises:
+///     Error::DepthLimitExceeded: If type depth limit is exceeded
+fn check_type(ty: &Type, depth: usize) -> Result<(), Error> {
+    if depth > crate::runtime::limits::MAX_TYPE_DEPTH {
+        return Err(Error::DepthLimitExceeded);
+    }
     match ty {
-        Type::Int | Type::String | Type::Bool | Type::Unit => 1,
+        Type::Int | Type::String | Type::Bool | Type::Unit => Ok(()),
         Type::Tuple(ts) => {
-            let max_inner = ts.iter().map(type_depth).max().unwrap_or(0);
-            1 + max_inner
+            for t in ts.iter() {
+                check_type(t, depth + 1)?;
+            }
+            Ok(())
         }
-        Type::Func(t1, t2) => 1 + std::cmp::max(type_depth(t1), type_depth(t2)),
-        Type::List(inner) => 1 + type_depth(inner),
+        Type::Func(t1, t2) => {
+            check_type(t1, depth + 1)?;
+            check_type(t2, depth + 1)?;
+            Ok(())
+        }
+        Type::List(inner) => check_type(inner, depth + 1),
     }
 }
 
@@ -272,17 +285,11 @@ impl<'a, 'b> Context<'a, 'b> {
                 let prev_service = self.current_service;
                 self.current_service = Some(service_name);
                 let res = if let Some(expected) = annotated {
-                    if type_depth(expected) > crate::runtime::limits::MAX_TYPE_DEPTH {
-                        return Err(Error::DepthLimitExceeded);
-                    }
+                    check_type(expected, 1)?;
                     self.check_expr(val, expected, &mut env)?;
                     expected.clone()
                 } else {
-                    let inferred = self.infer(val, &mut env)?;
-                    if type_depth(&inferred) > crate::runtime::limits::MAX_TYPE_DEPTH {
-                        return Err(Error::DepthLimitExceeded);
-                    }
-                    inferred
+                    self.infer(val, &mut env, 1)?
                 };
                 self.current_service = prev_service;
                 res
@@ -364,26 +371,21 @@ impl<'a, 'b> Context<'a, 'b> {
         let res = match stmt {
             ActionStmt::Let { name, ty, expr } => {
                 if let Some(expected) = ty {
-                    if type_depth(expected) > crate::runtime::limits::MAX_TYPE_DEPTH {
-                        return Err(Error::DepthLimitExceeded);
-                    }
+                    check_type(expected, 1)?;
                     self.check_expr(expr, expected, env)?;
                     env.bind(*name, expected.clone());
                 } else {
-                    let inferred = self.infer(expr, env)?;
-                    if type_depth(&inferred) > crate::runtime::limits::MAX_TYPE_DEPTH {
-                        return Err(Error::DepthLimitExceeded);
-                    }
+                    let inferred = self.infer(expr, env, 1)?;
                     env.bind(*name, inferred);
                 }
                 Ok(())
             }
             ActionStmt::Expr(expr) => {
-                self.infer(expr, env)?;
+                self.infer(expr, env, 1)?;
                 Ok(())
             }
             ActionStmt::Do(expr) => {
-                self.infer(expr, env)?;
+                self.infer(expr, env, 1)?;
                 Ok(())
             }
             ActionStmt::Assert(expr, _) => {
@@ -409,7 +411,7 @@ impl<'a, 'b> Context<'a, 'b> {
                 Ok(())
             }
             ActionStmt::Insert { row, .. } => {
-                self.infer(row, env)?;
+                self.infer(row, env, 1)?;
                 Ok(())
             }
             ActionStmt::For {
@@ -417,7 +419,7 @@ impl<'a, 'b> Context<'a, 'b> {
                 iterable,
                 body,
             } => {
-                let iter_ty = self.infer(iterable, env)?;
+                let iter_ty = self.infer(iterable, env, 1)?;
                 if let Type::List(elem_ty) = iter_ty {
                     let mut for_env = Env::new(Some(env));
                     for_env.bind(*var, (*elem_ty).clone());
@@ -534,7 +536,7 @@ impl<'a, 'b> Context<'a, 'b> {
                 Ok(())
             }
             (e, t) => {
-                let inferred = self.infer(e, env)?;
+                let inferred = self.infer(e, env, 1)?;
                 if inferred == *t {
                     Ok(())
                 } else {
@@ -554,10 +556,19 @@ impl<'a, 'b> Context<'a, 'b> {
     /// Args:
     ///     expr (&Expr): The expression to evaluate
     ///     env (&mut Env<'_, Type>): The local environment
+    ///     type_depth (usize): The current type depth
     ///
     /// Returns:
     ///     Result<Type, Error>: The synthesized type on success
-    fn infer(&mut self, expr: &Expr, env: &mut Env<'_, Type>) -> Result<Type, Error> {
+    fn infer(
+        &mut self,
+        expr: &Expr,
+        env: &mut Env<'_, Type>,
+        type_depth: usize,
+    ) -> Result<Type, Error> {
+        if type_depth > crate::runtime::limits::MAX_TYPE_DEPTH {
+            return Err(Error::DepthLimitExceeded);
+        }
         self.inc_depth()?;
         let res = match expr {
             Expr::Literal { val } => match val {
@@ -569,9 +580,9 @@ impl<'a, 'b> Context<'a, 'b> {
                     if vals.is_empty() {
                         Err(Error::CannotInferType)
                     } else {
-                        let inner = self.infer_value(&vals[0])?;
+                        let inner = self.infer_value(&vals[0], type_depth + 1)?;
                         for v in vals {
-                            let v_ty = self.infer_value(v)?;
+                            let v_ty = self.infer_value(v, type_depth + 1)?;
                             if v_ty != inner {
                                 return Err(Error::TypeMismatch {
                                     expected: inner,
@@ -593,6 +604,7 @@ impl<'a, 'b> Context<'a, 'b> {
                     let mut param_types = Vec::new();
                     for param in params {
                         if let Some(p_ty) = &param.ty {
+                            check_type(p_ty, 1)?;
                             local_env.bind(param.name, p_ty.clone());
                             param_types.push(p_ty.clone());
                         } else {
@@ -607,10 +619,11 @@ impl<'a, 'b> Context<'a, 'b> {
                         Type::Tuple(TupleType::new(param_types).unwrap())
                     };
                     let r_ty = if let Some(annotated_ret) = return_ty {
+                        check_type(annotated_ret, 1)?;
                         self.check_expr(body, annotated_ret, &mut local_env)?;
                         annotated_ret.clone()
                     } else {
-                        self.infer(body, &mut local_env)?
+                        self.infer(body, &mut local_env, type_depth + 1)?
                     };
                     Ok(Type::Func(Box::new(p_ty), Box::new(r_ty)))
                 }
@@ -635,12 +648,12 @@ impl<'a, 'b> Context<'a, 'b> {
                 } else {
                     let mut types = Vec::new();
                     for elem in val {
-                        types.push(self.infer(elem, env)?);
+                        types.push(self.infer(elem, env, type_depth + 1)?);
                     }
                     Ok(Type::Tuple(TupleType::new(types).unwrap()))
                 }
             }
-            Expr::KeyVal { value, .. } => self.infer(value, env),
+            Expr::KeyVal { value, .. } => self.infer(value, env, type_depth),
             Expr::Unop { op, expr } => match op {
                 UnOp::Neg => {
                     self.check_expr(expr, &Type::Int, env)?;
@@ -668,14 +681,14 @@ impl<'a, 'b> Context<'a, 'b> {
                     Ok(Type::Bool)
                 }
                 BinOp::Eq => {
-                    let ty1 = self.infer(expr1, env)?;
+                    let ty1 = self.infer(expr1, env, 1)?;
                     self.check_expr(expr2, &ty1, env)?;
                     Ok(Type::Bool)
                 }
             },
             Expr::If { cond, expr1, expr2 } => {
                 self.check_expr(cond, &Type::Bool, env)?;
-                let ty1 = self.infer(expr1, env)?;
+                let ty1 = self.infer(expr1, env, type_depth)?;
                 self.check_expr(expr2, &ty1, env)?;
                 Ok(ty1)
             }
@@ -688,6 +701,7 @@ impl<'a, 'b> Context<'a, 'b> {
                 let mut param_types = Vec::new();
                 for param in params {
                     if let Some(p_ty) = &param.ty {
+                        check_type(p_ty, 1)?;
                         local_env.bind(param.name, p_ty.clone());
                         param_types.push(p_ty.clone());
                     } else {
@@ -702,15 +716,16 @@ impl<'a, 'b> Context<'a, 'b> {
                     Type::Tuple(TupleType::new(param_types).unwrap())
                 };
                 let r_ty = if let Some(annotated_ret) = return_ty {
+                    check_type(annotated_ret, 1)?;
                     self.check_expr(body, annotated_ret, &mut local_env)?;
                     annotated_ret.clone()
                 } else {
-                    self.infer(body, &mut local_env)?
+                    self.infer(body, &mut local_env, type_depth + 1)?
                 };
                 Ok(Type::Func(Box::new(p_ty), Box::new(r_ty)))
             }
             Expr::Call { func, args } => {
-                let func_ty = self.infer(func, env)?;
+                let func_ty = self.infer(func, env, 1)?;
                 if let Type::Func(param_ty, ret_ty) = func_ty {
                     if args.is_empty() {
                         if *param_ty != Type::Unit {
@@ -762,7 +777,7 @@ impl<'a, 'b> Context<'a, 'b> {
                 if elems.is_empty() {
                     Err(Error::CannotInferType)
                 } else {
-                    let first_ty = self.infer(&elems[0], env)?;
+                    let first_ty = self.infer(&elems[0], env, type_depth + 1)?;
                     for elem in elems {
                         self.check_expr(elem, &first_ty, env)?;
                     }
@@ -783,10 +798,14 @@ impl<'a, 'b> Context<'a, 'b> {
     ///
     /// Args:
     ///     val (&Value): The value to infer
+    ///     type_depth (usize): The current type depth
     ///
     /// Returns:
     ///     Result<Type, Error>: Inferred type
-    fn infer_value(&mut self, val: &Value) -> Result<Type, Error> {
+    fn infer_value(&mut self, val: &Value, type_depth: usize) -> Result<Type, Error> {
+        if type_depth > crate::runtime::limits::MAX_TYPE_DEPTH {
+            return Err(Error::DepthLimitExceeded);
+        }
         match val {
             Value::Int { .. } => Ok(Type::Int),
             Value::Bool { .. } => Ok(Type::Bool),
@@ -796,9 +815,9 @@ impl<'a, 'b> Context<'a, 'b> {
                 if vals.is_empty() {
                     Err(Error::CannotInferType)
                 } else {
-                    let inner = self.infer_value(&vals[0])?;
+                    let inner = self.infer_value(&vals[0], type_depth + 1)?;
                     for v in vals {
-                        let v_ty = self.infer_value(v)?;
+                        let v_ty = self.infer_value(v, type_depth + 1)?;
                         if v_ty != inner {
                             return Err(Error::TypeMismatch {
                                 expected: inner,
