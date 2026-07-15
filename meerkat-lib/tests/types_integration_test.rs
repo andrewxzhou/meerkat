@@ -7,7 +7,7 @@ fn check_program(input: &str) -> Result<(), String> {
     let mut node = Node::new();
     let prog = parse_string(input, &mut node.interner)
         .map_err(|e| format!("Parse error: {}", e))
-        .unwrap();
+        .expect("Test program input must be syntactically valid.");
     node.check(&prog).map_err(|e| e.to_string())
 }
 
@@ -41,7 +41,7 @@ fn test_integration_primitive_mismatch() {
     ";
     let res = check_program(input);
     assert!(res.is_err());
-    let err = res.unwrap_err();
+    let err = res.expect_err("Type checking must fail.");
     assert!(err.contains("Type check error"))
 }
 
