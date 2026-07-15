@@ -1,8 +1,5 @@
 // Comprehensive grammar and type checking test demonstration
 
-// Import statement grammar rule
-import type_inference_demo
-
 // Watch statement grammar rule
 watch type_checking_demo.explicit_int;
 
@@ -48,7 +45,7 @@ service type_inference_demo {
 
     // Table selection returning list of units
     def active_users =
-        select id, name from users where active;
+        select id, name from users where users.active;
 
     // Table fold operation returning unit
     def folded_val =
