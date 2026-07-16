@@ -15,7 +15,7 @@ use crate::runtime::{nameres, tt, Env, Manager};
 /// Root manager for compiling and executing a Meerkat node
 pub struct Node<'a> {
     /// Reserved for the `Node` migration documented in `Issue 106`
-    pub service_classes: Env<'a, ServiceType<'a>>,
+    pub local_services: Env<'a, ServiceType<'a>>,
     pub interner: Interner,
 }
 
@@ -23,7 +23,7 @@ impl<'a> Node<'a> {
     /// Create a new empty Node representing the process context
     pub fn new() -> Self {
         Node {
-            service_classes: Env::new(None),
+            local_services: Env::new(None),
             interner: Interner::new(),
         }
     }
@@ -81,7 +81,7 @@ impl<'a> Node<'a> {
             nameres::Error::DepthLimit => Error::Message(e.to_string()),
         })?;
 
-        tt::check(program, &mut self.service_classes)
+        tt::check(program, &mut self.local_services)
             .map_err(|e| Error::Message(format!("Type check error: {}", e)))
     }
 

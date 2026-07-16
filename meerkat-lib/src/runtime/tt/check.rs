@@ -48,6 +48,7 @@ use crate::runtime::ast::{ActionStmt, BinOp, Decl, Expr, Stmt, UnOp, Value};
 use crate::runtime::interner::Symbol;
 use crate::runtime::tt::types::{Param, ServiceType, TupleType, Type};
 use crate::runtime::Env;
+use std::collections::HashSet;
 
 /// Validate the structural depth of a type representation
 ///
@@ -121,7 +122,11 @@ impl std::fmt::Display for Error {
 pub struct Context<'a, 'b> {
     depth: usize,
     program: &'a [Stmt],
-    service_classes: &'b mut Env<'a, ServiceType<'a>>,
+    /// Type environments for services that are declared locally in this program
+    local_services: &'b mut Env<'a, ServiceType<'a>>,
+    /// Names of services brought in via `import` statements; their member
+    /// types are unknown at compile time and are skipped by the checker
+    import_services: HashSet<Symbol>,
     checking_stack: Vec<(Symbol, Symbol)>,
     current_service: Option<Symbol>,
 }
@@ -130,16 +135,19 @@ impl<'a, 'b> Context<'a, 'b> {
     /// Create a new type checking context
     ///
     /// Args:
-    ///     program (&'a [Stmt]): Slices of parsed statements
-    ///     service_classes (&'b mut Env<'a, ServiceType<'a>>): Service classes
+    ///     `program` (`&'a [Stmt]`): Slices of parsed statements
+    ///     `local_services` (`&'b mut Env<'a, ServiceType<'a>>`): Mutable
+    ///         environment mapping locally-declared service names to their
+    ///         accumulated `ServiceType` records
     ///
     /// Returns:
-    ///     Self: The Context instance
-    fn new(program: &'a [Stmt], service_classes: &'b mut Env<'a, ServiceType<'a>>) -> Self {
+    ///     `Self`: The `Context` instance
+    fn new(program: &'a [Stmt], local_services: &'b mut Env<'a, ServiceType<'a>>) -> Self {
         Self {
             depth: 0,
             program,
-            service_classes,
+            local_services,
+            import_services: HashSet::new(),
             checking_stack: Vec::new(),
             current_service: None,
         }
@@ -171,13 +179,23 @@ impl<'a, 'b> Context<'a, 'b> {
     /// Execute type checking on all program statements
     ///
     /// Returns:
-    ///     Result<(), Error>: Ok on success
+    ///     `Result<(), Error>`: Ok on success
     pub fn check_all(&mut self) -> Result<(), Error> {
+        // First pass: register all locally-declared service names so that
+        // forward-reference lookups within `type_of_member` can find them,
+        // and collect all imported service names so that cross-service member
+        // accesses can be skipped rather than hard-errored
         for stmt in self.program {
-            if let Stmt::Service { name, .. } = stmt {
-                if self.service_classes.find(*name).is_none() {
-                    self.service_classes.bind(*name, ServiceType::default());
+            match stmt {
+                Stmt::Service { name, .. } => {
+                    if self.local_services.find(*name).is_none() {
+                        self.local_services.bind(*name, ServiceType::default());
+                    }
                 }
+                Stmt::Import { service_name, .. } => {
+                    self.import_services.insert(*service_name);
+                }
+                _ => {}
             }
         }
 
@@ -262,10 +280,23 @@ impl<'a, 'b> Context<'a, 'b> {
     ///     Error::CannotInferType: On cyclic dependencies
     ///     Error::UnboundVariable: If member is not found
     fn type_of_member(&mut self, service_name: Symbol, member_name: Symbol) -> Result<Type, Error> {
-        if let Some(st) = self.service_classes.find(service_name) {
+        // Fast path: member type already cached from a prior check
+        if let Some(st) = self.local_services.find(service_name) {
             if let Some(ty) = st.fields().find(member_name) {
                 return Ok(ty.clone());
             }
+        }
+
+        // If the service was brought in via `import`, its declarations are
+        // not present in this compilation unit and cannot be type-checked.
+        // Emit a warning and treat the member as `Unit` (unchecked) so that
+        // the program is not prevented from running
+        if self.import_services.contains(&service_name) {
+            println!(
+                "warning: tt/check: skipping member type check for \
+                 imported service (type unknown at compile time)"
+            );
+            return Ok(Type::Unit);
         }
 
         let key = (service_name, member_name);
@@ -321,9 +352,9 @@ impl<'a, 'b> Context<'a, 'b> {
 
         self.checking_stack.pop();
 
-        if let Some(mut st) = self.service_classes.remove(service_name) {
+        if let Some(mut st) = self.local_services.remove(service_name) {
             let _ = st.add_field(member_name, ty.clone());
-            self.service_classes.bind(service_name, st);
+            self.local_services.bind(service_name, st);
         }
 
         Ok(ty)
@@ -366,7 +397,7 @@ impl<'a, 'b> Context<'a, 'b> {
     ///     Result<(), Error>: Ok on success
     fn check_test(&mut self, service_name: Symbol, stmts: &[ActionStmt]) -> Result<(), Error> {
         let mut test_env = Env::new(None);
-        if let Some(st) = self.service_classes.find(service_name) {
+        if let Some(st) = self.local_services.find(service_name) {
             for name in st.field_order() {
                 if let Some(ty) = st.fields().find(*name) {
                     test_env.bind(*name, ty.clone());
@@ -425,7 +456,7 @@ impl<'a, 'b> Context<'a, 'b> {
                 let ty = if let Some(local_ty) = env.find(*name) {
                     local_ty.clone()
                 } else if let Some(svc) = self.current_service {
-                    if let Some(st) = self.service_classes.find(svc) {
+                    if let Some(st) = self.local_services.find(svc) {
                         st.fields()
                             .find(*name)
                             .ok_or(Error::UnboundVariable(*name))?
@@ -705,7 +736,14 @@ impl<'a, 'b> Context<'a, 'b> {
                 }
                 BinOp::Eq => {
                     let ty1 = self.infer(expr1, env, type_depth)?;
-                    self.check_expr(expr2, &ty1, env)?;
+                    // If the left side resolved to `Unit`, it is the sentinel
+                    // type used for imported service members whose concrete
+                    // types are not known at compile time. Skip checking the
+                    // right side to avoid false type errors cascading from
+                    // the import bypass
+                    if ty1 != Type::Unit {
+                        self.check_expr(expr2, &ty1, env)?;
+                    }
                     Ok(Type::Bool)
                 }
             },
@@ -916,22 +954,24 @@ impl<'a, 'b> Context<'a, 'b> {
     }
 }
 
-/// Type check the entire parsed program and populate service classes
+/// Type check the entire parsed program and populate local service types
 ///
 /// Args:
-///     program (&[Stmt]): Slices of parsed statements
-///     service_classes (&mut Env<'_, ServiceType<'_>>): Service environment
+///     `program` (`&[Stmt]`): Slices of parsed statements
+///     `local_services` (`&mut Env<'_, ServiceType<'_>>`): Mutable
+///         environment that accumulates type information for each
+///         locally-declared service; imported services are skipped
 ///
 /// Returns:
-///     Result<(), Error>: Ok on success
+///     `Result<(), Error>`: Ok on success
 ///
 /// Raises:
-///     Error: Any type error encountered during resolution
+///     `Error`: Any type error encountered during resolution
 pub fn check<'a>(
     program: &'a [Stmt],
-    service_classes: &mut Env<'a, ServiceType<'a>>,
+    local_services: &mut Env<'a, ServiceType<'a>>,
 ) -> Result<(), Error> {
-    let mut context = Context::new(program, service_classes);
+    let mut context = Context::new(program, local_services);
     context.check_all()
 }
 

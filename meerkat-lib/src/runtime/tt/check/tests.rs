@@ -899,3 +899,69 @@ fn test_lambda_annotations_in_checking_mode() {
         })
     );
 }
+
+/// Verify that a local service referencing a member of an imported service
+/// does not produce a type error. The type checker cannot know the member
+/// types of remote services, so it must skip the check and allow the
+/// program to proceed to runtime
+#[test]
+fn test_import_member_access_is_skipped() {
+    let mut interner = Interner::new();
+    let remote_svc = interner.insert("na");
+    let local_svc = interner.insert("nb");
+    let remote_member = interner.insert("get_x");
+    let local_val = interner.insert("val");
+
+    // Program: `import na` then `service nb { pub def val = na.get_x; }`
+    let program = vec![
+        Stmt::Import {
+            path: "na".to_string(),
+            service_name: remote_svc,
+        },
+        Stmt::Service {
+            name: local_svc,
+            decls: vec![Decl::DefDecl {
+                name: local_val,
+                ty: None,
+                is_pub: false,
+                val: Expr::MemberAccess {
+                    service_name: remote_svc,
+                    member_name: remote_member,
+                },
+            }],
+        },
+    ];
+    let mut classes = Env::new(None);
+    let res = check(&program, &mut classes);
+    assert!(res.is_ok())
+}
+
+/// Verify that a `MemberAccess` expression targeting a service that is
+/// neither declared locally nor imported still produces a hard error.
+/// This is the negative/defensive case ensuring the import bypass is
+/// precisely scoped to services registered via `Stmt::Import`
+#[test]
+fn test_unknown_service_member_access_errors() {
+    let mut interner = Interner::new();
+    let ghost_svc = interner.insert("ghost");
+    let local_svc = interner.insert("nb");
+    let ghost_member = interner.insert("val");
+    let local_def = interner.insert("x");
+
+    // Program: `service nb { pub def x = ghost.val; }` — `ghost` is not imported
+    let program = vec![Stmt::Service {
+        name: local_svc,
+        decls: vec![Decl::DefDecl {
+            name: local_def,
+            ty: None,
+            is_pub: false,
+            val: Expr::MemberAccess {
+                service_name: ghost_svc,
+                member_name: ghost_member,
+            },
+        }],
+    }];
+    let mut classes = Env::new(None);
+    let res = check(&program, &mut classes);
+    assert_eq!(res, Err(Error::UnboundVariable(ghost_svc)))
+}
