@@ -18,25 +18,36 @@ use std::error::Error;
 /// #151: load a persistent libp2p identity keypair from `path`, or create and
 /// save one if the file does not yet exist. Using the same file across runs
 /// keeps the node's Peer ID stable, so a web page can embed a fixed server
-/// address. The keypair is stored in libp2p's protobuf encoding; on Unix the
-/// file is created with owner-only permissions since it holds a private key.
+/// address. The keypair is stored in libp2p's protobuf encoding.
+///
+/// The file holds a private key, so on Unix it is created atomically with
+/// owner-only (0600) permissions using `create_new`; this leaves no window in
+/// which the key is world-readable and avoids a check-then-write race.
 fn load_or_create_identity(
     path: &std::path::Path,
 ) -> Result<meerkat_lib::net::identity::Keypair, Box<dyn Error>> {
     use meerkat_lib::net::identity::Keypair;
-    if path.exists() {
-        let bytes = std::fs::read(path)?;
-        Ok(Keypair::from_protobuf_encoding(&bytes)?)
-    } else {
-        let keypair = Keypair::generate_ed25519();
-        let bytes = keypair.to_protobuf_encoding()?;
-        std::fs::write(path, &bytes)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    // Try to load an existing key first; only generate one if it is absent.
+    // Reading first (rather than checking `exists()`) avoids a time-of-check
+    // to time-of-use gap between the check and the write.
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Keypair::from_protobuf_encoding(&bytes)?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let keypair = Keypair::generate_ed25519();
+            let bytes = keypair.to_protobuf_encoding()?;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            use std::io::Write;
+            let mut file = options.open(path)?;
+            file.write_all(&bytes)?;
+            Ok(keypair)
         }
-        Ok(keypair)
+        Err(e) => Err(Box::new(e)),
     }
 }
 
