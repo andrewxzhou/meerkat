@@ -43,9 +43,20 @@ fn load_or_create_identity(
                 options.mode(0o600);
             }
             use std::io::Write;
-            let mut file = options.open(path)?;
-            file.write_all(&bytes)?;
-            Ok(keypair)
+            // `create_new` fails with AlreadyExists if another process created
+            // the file in the window since our read above; in that case just
+            // load the key it wrote rather than failing startup.
+            match options.open(path) {
+                Ok(mut file) => {
+                    file.write_all(&bytes)?;
+                    Ok(keypair)
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let bytes = std::fs::read(path)?;
+                    Ok(Keypair::from_protobuf_encoding(&bytes)?)
+                }
+                Err(e) => Err(Box::new(e)),
+            }
         }
         Err(e) => Err(Box::new(e)),
     }
