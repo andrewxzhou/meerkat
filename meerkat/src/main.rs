@@ -15,6 +15,31 @@ use meerkat_lib::runtime::{parser, Manager, Node};
 use std::collections::HashSet;
 use std::error::Error;
 
+/// #151: load a persistent libp2p identity keypair from `path`, or create and
+/// save one if the file does not yet exist. Using the same file across runs
+/// keeps the node's Peer ID stable, so a web page can embed a fixed server
+/// address. The keypair is stored in libp2p's protobuf encoding; on Unix the
+/// file is created with owner-only permissions since it holds a private key.
+fn load_or_create_identity(
+    path: &std::path::Path,
+) -> Result<meerkat_lib::net::identity::Keypair, Box<dyn Error>> {
+    use meerkat_lib::net::identity::Keypair;
+    if path.exists() {
+        let bytes = std::fs::read(path)?;
+        Ok(Keypair::from_protobuf_encoding(&bytes)?)
+    } else {
+        let keypair = Keypair::generate_ed25519();
+        let bytes = keypair.to_protobuf_encoding()?;
+        std::fs::write(path, &bytes)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(keypair)
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 struct Args {
@@ -42,6 +67,12 @@ struct Args {
     /// second, WebSocket address. Defaults to `port + 1`.
     #[arg(long = "ws-port")]
     ws_port: Option<u16>,
+
+    /// #151: path to a persistent identity keypair. If the file exists it is
+    /// loaded, giving a stable Peer ID across restarts; otherwise a new keypair
+    /// is generated and saved there. Omit for an ephemeral random identity.
+    #[arg(long = "identity")]
+    identity: Option<std::path::PathBuf>,
 
     /// Bind to loopback/localhost only (force 127.0.0.1 instead of public IP)
     #[arg(long = "local", default_value_t = false)]
@@ -124,6 +155,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
                     args.port,
                     args.ws_port,
                     args.local,
+                    args.identity,
                     interner,
                 )
                 .await
@@ -278,6 +310,7 @@ async fn run_server(
     port: u16,
     ws_port: Option<u16>,
     local: bool,
+    identity: Option<std::path::PathBuf>,
     interner: Interner,
 ) -> Result<(), Box<dyn Error>> {
     // #39: the directory the server was started from is the root for serving
@@ -287,7 +320,13 @@ async fn run_server(
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
         .to_path_buf();
-    let mut net = NetworkActor::new(NodeType::Server).await?;
+    // #151: when an identity file is configured, load (or create) a
+    // persistent keypair so the Peer ID is stable across restarts.
+    let identity_keypair = match identity {
+        Some(path) => Some(load_or_create_identity(&path)?),
+        None => None,
+    };
+    let mut net = NetworkActor::new_with_identity(NodeType::Server, identity_keypair).await?;
     let mut manager = Manager::new(interner);
     manager.local = local;
 

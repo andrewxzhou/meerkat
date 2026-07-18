@@ -65,10 +65,18 @@ pub struct NetworkActor {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-async fn build_swarm() -> anyhow::Result<(libp2p::Swarm<MeerkatBehaviour>, PeerId)> {
+async fn build_swarm(
+    identity: Option<libp2p::identity::Keypair>,
+) -> anyhow::Result<(libp2p::Swarm<MeerkatBehaviour>, PeerId)> {
     use libp2p::identify;
 
-    let swarm = libp2p::SwarmBuilder::with_new_identity()
+    // #151: use a caller-provided keypair when present (stable Peer ID across
+    // restarts); otherwise fall back to a fresh random identity.
+    let builder = match identity {
+        Some(keypair) => libp2p::SwarmBuilder::with_existing_identity(keypair),
+        None => libp2p::SwarmBuilder::with_new_identity(),
+    };
+    let swarm = builder
         .with_tokio()
         .with_tcp(
             libp2p::tcp::Config::default(),
@@ -104,9 +112,13 @@ async fn build_swarm() -> anyhow::Result<(libp2p::Swarm<MeerkatBehaviour>, PeerI
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn build_swarm() -> anyhow::Result<(libp2p::Swarm<MeerkatBehaviour>, PeerId)> {
+async fn build_swarm(
+    _identity: Option<libp2p::identity::Keypair>,
+) -> anyhow::Result<(libp2p::Swarm<MeerkatBehaviour>, PeerId)> {
     use libp2p::{core::upgrade, identity, Transport};
 
+    // #151: browser clients are ephemeral; a persistent identity is a server
+    // concern, so any provided keypair is ignored here.
     let id_keys = identity::Keypair::generate_ed25519();
     let local_peer_id = PeerId::from(id_keys.public());
 
@@ -158,7 +170,17 @@ fn spawn_event_loop(fut: impl std::future::Future<Output = ()> + 'static) {
 
 impl NetworkActor {
     pub async fn new(node_type: NodeType) -> anyhow::Result<Self> {
-        let (swarm, local_peer_id) = build_swarm().await?;
+        Self::new_with_identity(node_type, None).await
+    }
+
+    // #151: like `new`, but uses a caller-provided keypair when present so the
+    // node keeps a stable Peer ID across restarts. A `None` identity yields a
+    // fresh random one, matching `new`.
+    pub async fn new_with_identity(
+        node_type: NodeType,
+        identity: Option<libp2p::identity::Keypair>,
+    ) -> anyhow::Result<Self> {
+        let (swarm, local_peer_id) = build_swarm(identity).await?;
 
         let (command_tx, command_rx) = mpsc::unbounded_channel::<SwarmCommand>();
         let (event_tx, event_rx) = mpsc::unbounded_channel::<NetworkEvent>();
