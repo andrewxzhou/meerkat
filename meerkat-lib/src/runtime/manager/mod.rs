@@ -1970,8 +1970,8 @@ impl Manager {
         services: &HashMap<String, LockGroup>,
     ) -> Result<(), EvalError> {
         println!(
-            "[DEBUG] acquire_lock_group_internal starting for txn={:?}, \
-             services={:?}",
+            "[DEBUG] acquire_lock_group_internal starting for \
+             txn={:?}, services={:?}",
             txn.id, services
         );
 
@@ -1988,7 +1988,6 @@ impl Manager {
 
         // 2. Queue for resolving all local locks (same and cross service)
         let mut queue: Vec<(Symbol, Symbol, bool)> = Vec::new();
-        let mut local_reqs: HashMap<(Symbol, Symbol), bool> = HashMap::new();
         let mut visited = HashSet::new();
 
         for (svc_name_str, group) in services {
@@ -2006,64 +2005,90 @@ impl Manager {
         let mut remote_locks: HashMap<Symbol, (HashSet<String>, HashSet<String>)> = HashMap::new();
 
         while let Some((svc_sym, mem_sym, is_write)) = queue.pop() {
-            let current_is_write = local_reqs
-                .get(&(svc_sym, mem_sym))
-                .cloned()
-                .unwrap_or(false);
-            if current_is_write || ((!is_write) && local_reqs.contains_key(&(svc_sym, mem_sym))) {
-                continue;
-            }
+            if self.services.contains_key(&svc_sym) {
+                // Acquire the local lock (or upgrade it to a write lock
+                // if already read-locked) before checking the member's
+                // dependencies. This prevents a race condition where a
+                // def expression is mutated by another transaction
+                // after we check its dependencies but before we lock it
+                let key = (self.service_net_id_for_name(svc_sym), mem_sym);
+                let svc_name = self.interner.get(svc_sym).to_string();
+                let mem_name = self.interner.get(mem_sym).to_string();
 
-            local_reqs.insert((svc_sym, mem_sym), is_write);
-
-            if visited.insert((svc_sym, mem_sym)) {
-                if let Some(service) = self.services.get(&svc_sym) {
-                    // Transitive local dependencies within same service
-                    if let Some(deps) = service.dep.dep_transitive.get(&mem_sym) {
-                        for dep_sym in deps {
-                            queue.push((svc_sym, *dep_sym, false));
-                        }
+                if !txn.locked.contains(&key) {
+                    // Acquire a new lock since the variable is not
+                    // yet locked by the current transaction
+                    if is_write {
+                        println!(
+                            "[DEBUG] Acquiring local write lock \
+                             on {}.{}",
+                            svc_name, mem_name
+                        );
+                        self.acquire_write_lock(svc_sym, mem_sym, &txn.id)?;
+                    } else {
+                        println!(
+                            "[DEBUG] Acquiring local read lock \
+                             on {}.{}",
+                            svc_name, mem_name
+                        );
+                        self.acquire_read_lock(svc_sym, mem_sym, &txn.id)?;
                     }
+                    txn.locked.insert(key);
+                } else if is_write {
+                    // Upgrade the existing read lock to a write lock
+                    // if a write lock is requested
+                    println!(
+                        "[DEBUG] Upgrading local lock to write \
+                         on {}.{}",
+                        svc_name, mem_name
+                    );
+                    self.upgrade_to_write_lock(svc_sym, mem_sym, &txn.id)?;
+                }
 
-                    // Cross-service dependencies
-                    if let Some(expr) = service.defs.get(&mem_sym) {
-                        for (remote_svc, remote_mem) in expr.cross_service_deps() {
-                            if self.remote_services.contains_key(&remote_svc) {
-                                let remote_mem_str = self.interner.get(remote_mem).to_string();
-                                remote_locks
-                                    .entry(remote_svc)
-                                    .or_insert_with(|| (HashSet::new(), HashSet::new()))
-                                    .0
-                                    .insert(remote_mem_str);
-                            } else {
-                                queue.push((remote_svc, remote_mem, false));
+                // Traverse dependencies after locking
+                if visited.insert((svc_sym, mem_sym)) {
+                    if let Some(service) = self.services.get(&svc_sym) {
+                        // Transitive local dependencies
+                        if let Some(deps) = service.dep.dep_transitive.get(&mem_sym) {
+                            for dep_sym in deps {
+                                queue.push((svc_sym, *dep_sym, false));
+                            }
+                        }
+
+                        // Cross-service dependencies
+                        if let Some(expr) = service.defs.get(&mem_sym) {
+                            for (remote_svc, remote_mem) in expr.cross_service_deps() {
+                                if self.remote_services.contains_key(&remote_svc) {
+                                    // Track remote dependencies for a
+                                    // remote service to request them
+                                    // as a batch later
+                                    let remote_mem_str = self.interner.get(remote_mem).to_string();
+                                    remote_locks
+                                        .entry(remote_svc)
+                                        .or_insert_with(|| (HashSet::new(), HashSet::new()))
+                                        .0
+                                        .insert(remote_mem_str);
+                                } else {
+                                    // Queue cross-service dependency
+                                    // for local lock and traversal
+                                    queue.push((remote_svc, remote_mem, false));
+                                }
                             }
                         }
                     }
                 }
-            }
-        }
-
-        // 3. Acquire all local locks
-        for ((svc_sym, mem_sym), is_write) in local_reqs {
-            let key = (self.service_net_id_for_name(svc_sym), mem_sym);
-            if !txn.locked.contains(&key) {
-                let svc_name = self.interner.get(svc_sym).to_string();
-                let mem_name = self.interner.get(mem_sym).to_string();
+            } else if self.remote_services.contains_key(&svc_sym) {
+                // Accumulate remote lock requirements mapped to their
+                // host node address
+                let mem_str = self.interner.get(mem_sym).to_string();
+                let entry = remote_locks
+                    .entry(svc_sym)
+                    .or_insert_with(|| (HashSet::new(), HashSet::new()));
                 if is_write {
-                    println!(
-                        "[DEBUG] Acquiring local write lock on {}.{}",
-                        svc_name, mem_name
-                    );
-                    self.acquire_write_lock(svc_sym, mem_sym, &txn.id)?;
+                    entry.1.insert(mem_str);
                 } else {
-                    println!(
-                        "[DEBUG] Acquiring local read lock on {}.{}",
-                        svc_name, mem_name
-                    );
-                    self.acquire_read_lock(svc_sym, mem_sym, &txn.id)?;
+                    entry.0.insert(mem_str);
                 }
-                txn.locked.insert(key);
             }
         }
 
