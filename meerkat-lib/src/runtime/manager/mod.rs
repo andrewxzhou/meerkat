@@ -7,7 +7,7 @@ use crate::net::{
     NetworkReply, ServiceNetId,
 };
 use crate::runtime::interner::{Interner, Symbol};
-use crate::runtime::txn::{Transaction, TxnId, VarState};
+use crate::runtime::txn::{Transaction, TxnId, VarState, WaitKey};
 use std::collections::{HashMap, HashSet};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
@@ -86,9 +86,9 @@ pub struct Manager {
     /// buffered writes) until a Commit or Abort arrives.
     pub pending_txns: HashMap<TxnId, Transaction>,
     /// Requests parked because the requesting transaction is older than a lock
-    /// holder (wait-die wait), keyed by the contended (service, var). Drained
-    /// oldest-first when that variable's lock frees on commit or abort.
-    pub wait_queue: HashMap<(ServiceNetId, Symbol), Vec<ParkedRequest>>,
+    /// holder (wait-die wait), keyed by the contended WaitKey. Drained
+    /// oldest-first when that lock frees on commit or abort.
+    pub wait_queue: HashMap<WaitKey, Vec<ParkedRequest>>,
     /// This node's canonical, dialable address, set once after the network is
     /// listening. Service identities are derived from it, so they are stable for
     /// the life of the process (never empty-then-populated) and match the URL
@@ -125,22 +125,24 @@ impl Manager {
         }
     }
 
+    /// Park a request on the wait queue for the contended `WaitKey`
+    pub fn park_request_key(&mut self, key: WaitKey, parked: ParkedRequest) {
+        self.wait_queue.entry(key).or_default().push(parked);
+    }
+
     /// Park a request on the wait queue for the contended `(service, var)`
     /// It receives no reply until that variable's lock frees and it is
     /// re-dispatched
     pub fn park_request(&mut self, service: Symbol, var: Symbol, parked: ParkedRequest) {
-        let key = (self.service_net_id_for_name(service), var);
-        self.wait_queue.entry(key).or_default().push(parked);
+        let key = WaitKey::Member(self.service_net_id_for_name(service), var);
+        self.park_request_key(key, parked);
     }
 
     /// After a holder releases locks on commit or abort, return the oldest
-    /// parked request waiting on each freed (service, var), removing it from the
+    /// parked request waiting on each freed lock key, removing it from the
     /// queue. Serving the oldest first is what keeps an older transaction from
     /// being starved by a stream of younger requests.
-    pub fn take_ready_waiters(
-        &mut self,
-        freed: &HashSet<(ServiceNetId, Symbol)>,
-    ) -> Vec<ParkedRequest> {
+    pub fn take_ready_waiters(&mut self, freed: &HashSet<WaitKey>) -> Vec<ParkedRequest> {
         let mut ready = Vec::new();
         for key in freed {
             if let Some(waiters) = self.wait_queue.get_mut(key) {
@@ -385,7 +387,8 @@ impl Manager {
         }
 
         // Release all locks held locally (always, even on error)
-        self.release_locks(&txn.locked, &txn.id);
+        let freed = self.all_locked_keys(&txn);
+        self.release_locks(&freed, &txn.id);
 
         match init_error {
             Some(e) => Err(e),
@@ -1357,7 +1360,8 @@ impl Manager {
                 }
                 // Could not acquire the read lock (e.g. conflict): release any
                 // locks taken and do not keep this transaction prepared.
-                self.release_locks(&txn.locked, &txn.id);
+                let freed = self.all_locked_keys(&txn);
+                self.release_locks(&freed, &txn.id);
                 Err(e)
             }
         }
@@ -1548,6 +1552,21 @@ impl Manager {
                 self.interner.get(service_name)
             ))
         })?;
+        // Enforce service lock boundary: a whole-service lock blocks all
+        // member locks unless held by the same transaction
+        if let Some(holder) = &service.service_lock {
+            if holder != txn_id {
+                let holder_older = holder < txn_id;
+                if holder_older {
+                    return Err(EvalError::WaitDieAbort(format!(
+                        "transaction died contending for service lock on '{}'",
+                        self.interner.get(service_name)
+                    )));
+                } else {
+                    return Err(EvalError::WaitOn(service_name, service_name));
+                }
+            }
+        }
         let var_state = service.vars.get_mut(&var).ok_or_else(|| {
             EvalError::VarNotFound(format!("Variable '{}' not found", self.interner.get(var)))
         })?;
@@ -1594,6 +1613,21 @@ impl Manager {
                 self.interner.get(service_name)
             ))
         })?;
+        // Enforce service lock boundary: a whole-service lock blocks all
+        // member locks unless held by the same transaction
+        if let Some(holder) = &service.service_lock {
+            if holder != txn_id {
+                let holder_older = holder < txn_id;
+                if holder_older {
+                    return Err(EvalError::WaitDieAbort(format!(
+                        "transaction died contending for service lock on '{}'",
+                        self.interner.get(service_name)
+                    )));
+                } else {
+                    return Err(EvalError::WaitOn(service_name, service_name));
+                }
+            }
+        }
         let var_state = service.vars.get_mut(&var).ok_or_else(|| {
             EvalError::VarNotFound(format!("Variable '{}' not found", self.interner.get(var)))
         })?;
@@ -1639,6 +1673,21 @@ impl Manager {
                 self.interner.get(service_name)
             ))
         })?;
+        // Enforce service lock boundary: a whole-service lock blocks all
+        // member locks unless held by the same transaction
+        if let Some(holder) = &service.service_lock {
+            if holder != txn_id {
+                let holder_older = holder < txn_id;
+                if holder_older {
+                    return Err(EvalError::WaitDieAbort(format!(
+                        "transaction died contending for service lock on '{}'",
+                        self.interner.get(service_name)
+                    )));
+                } else {
+                    return Err(EvalError::WaitOn(service_name, service_name));
+                }
+            }
+        }
         let var_state = service.vars.get_mut(&var).ok_or_else(|| {
             EvalError::VarNotFound(format!("Variable '{}' not found", self.interner.get(var)))
         })?;
@@ -1656,26 +1705,34 @@ impl Manager {
     }
 
     /// Helper to get all locked keys (variables and service locks) for a transaction
-    fn all_locked_keys(&self, txn: &Transaction) -> HashSet<(ServiceNetId, Symbol)> {
-        let mut keys = txn.locked.clone();
+    fn all_locked_keys(&self, txn: &Transaction) -> HashSet<WaitKey> {
+        let mut keys = HashSet::new();
+        for (sid, var) in &txn.locked {
+            keys.insert(WaitKey::Member(sid.clone(), *var));
+        }
         for sid in &txn.service_locked {
-            if let Some(name) = self.service_name_for_net_id(sid) {
-                keys.insert((sid.clone(), name));
-            }
+            keys.insert(WaitKey::Service(sid.clone()));
         }
         keys
     }
 
     /// Release all locks held by `txn_id` on the given variables (and service locks)
-    fn release_locks(&mut self, locked: &HashSet<(ServiceNetId, Symbol)>, txn_id: &TxnId) {
-        for (sid, var) in locked {
-            if let Some(service) = self.service_by_net_id_mut(sid) {
-                if service.name == *var {
-                    if service.service_lock.as_ref() == Some(txn_id) {
-                        service.service_lock = None;
+    fn release_locks(&mut self, locked: &HashSet<WaitKey>, txn_id: &TxnId) {
+        for key in locked {
+            match key {
+                WaitKey::Service(sid) => {
+                    if let Some(service) = self.service_by_net_id_mut(sid) {
+                        if service.service_lock.as_ref() == Some(txn_id) {
+                            service.service_lock = None;
+                        }
                     }
-                } else if let Some(var_state) = service.vars.get_mut(var) {
-                    var_state.lock.release(txn_id);
+                }
+                WaitKey::Member(sid, var) => {
+                    if let Some(service) = self.service_by_net_id_mut(sid) {
+                        if let Some(var_state) = service.vars.get_mut(var) {
+                            var_state.lock.release(txn_id);
+                        }
+                    }
                 }
             }
         }
@@ -1830,10 +1887,7 @@ impl Manager {
     }
 
     /// Participant side: apply and release a held transaction on `Commit`
-    pub async fn commit_participant(
-        &mut self,
-        tid: &TxnId,
-    ) -> Result<HashSet<(ServiceNetId, Symbol)>, EvalError> {
+    pub async fn commit_participant(&mut self, tid: &TxnId) -> Result<HashSet<WaitKey>, EvalError> {
         if let Some(txn) = self.pending_txns.remove(tid) {
             let freed = self.all_locked_keys(&txn);
             self.apply_committed_writes(&txn).await;
@@ -1855,7 +1909,7 @@ impl Manager {
 
     /// Participant side: discard and release a held transaction on `Abort`, and
     /// forward the abort down the chain to any sub-participants
-    pub async fn abort_participant(&mut self, tid: &TxnId) -> HashSet<(ServiceNetId, Symbol)> {
+    pub async fn abort_participant(&mut self, tid: &TxnId) -> HashSet<WaitKey> {
         if let Some(txn) = self.pending_txns.remove(tid) {
             let freed = self.all_locked_keys(&txn);
             self.release_locks(&freed, &txn.id);
@@ -1881,27 +1935,47 @@ impl Manager {
             ))
         })?;
 
-        match &service.service_lock {
-            None => {
-                service.service_lock = Some(txn_id.clone());
-                Ok(())
+        // Step 1: Check whole-service lock boundary
+        // A service-level lock acts as an exclusive write lock on all
+        // present and future members. If held by another transaction,
+        // younger requesters abort immediately under wait-die, while
+        // older requesters yield `WaitOn(service, service)` to park
+        if let Some(holder) = &service.service_lock {
+            if holder == txn_id {
+                return Ok(());
             }
-            Some(holder) => {
-                if holder == txn_id {
-                    Ok(())
+            let holder_older = holder < txn_id;
+            if holder_older {
+                return Err(EvalError::WaitDieAbort(format!(
+                    "transaction died contending for service lock on '{}'",
+                    self.interner.get(service_name)
+                )));
+            } else {
+                return Err(EvalError::WaitOn(service_name, service_name));
+            }
+        }
+
+        // Step 2: Defensive O(N) scan across member variables
+        // Before granting the service-level lock, scan all member
+        // variables to ensure no other transaction holds an active
+        // member lock. If contention exists, apply wait-die against
+        // the oldest lock holder on that variable
+        for (var_name, var_state) in &service.vars {
+            if let Some(other_holder) = var_state.lock.oldest_other_holder(txn_id) {
+                let holder_older = &other_holder < txn_id;
+                if holder_older {
+                    return Err(EvalError::WaitDieAbort(format!(
+                        "transaction died contending for service lock on '{}'",
+                        self.interner.get(service_name)
+                    )));
                 } else {
-                    let holder_older = holder < txn_id;
-                    if holder_older {
-                        Err(EvalError::WaitDieAbort(format!(
-                            "transaction died contending for service lock on '{}'",
-                            self.interner.get(service_name)
-                        )))
-                    } else {
-                        Err(EvalError::WaitOn(service_name, service_name))
-                    }
+                    return Err(EvalError::WaitOn(service_name, *var_name));
                 }
             }
         }
+
+        service.service_lock = Some(txn_id.clone());
+        Ok(())
     }
 
     /// Handle eager LockRequest from the network.
@@ -1932,19 +2006,32 @@ impl Manager {
 
         let result = self.acquire_lock_group_internal(&mut txn, &services).await;
 
-        match &result {
+        match result {
             Ok(()) => {
                 self.pending_txns.insert(txn_id, txn);
                 Ok(())
             }
-            Err(EvalError::WaitOn(_, _)) => {
-                self.pending_txns.insert(txn_id, txn);
-                Err(result.unwrap_err())
-            }
-            Err(_) => {
+            // CRITICAL: All-or-Nothing Eager Lock Group Release
+            // If a lock group acquisition encounters contention and
+            // yields `WaitOn`, we MUST NOT hold onto partial locks.
+            // Holding partial locks while parked would stall incoming
+            // atomic updates that require those same locks.
+            // On `WaitOn`, we immediately release all partial locks taken
+            // so far and clear the transaction's lock tracking sets,
+            // ensuring the transaction yields completely and retries
+            // from scratch when unparked
+            Err(EvalError::WaitOn(svc, var)) => {
                 let freed = self.all_locked_keys(&txn);
                 self.release_locks(&freed, &txn.id);
-                Err(result.unwrap_err())
+                txn.locked.clear();
+                txn.service_locked.clear();
+                self.pending_txns.insert(txn_id, txn);
+                Err(EvalError::WaitOn(svc, var))
+            }
+            Err(e) => {
+                let freed = self.all_locked_keys(&txn);
+                self.release_locks(&freed, &txn.id);
+                Err(e)
             }
         }
     }
@@ -3269,7 +3356,10 @@ mod tests {
         tc.manager.park_request(tc.s1, tc.x, make(2, old.clone()));
         // Freeing `x` yields the oldest waiter first; the other stays parked
         let mut freed = std::collections::HashSet::new();
-        freed.insert((tc.manager.service_net_id_for_name(tc.s1), tc.x));
+        freed.insert(WaitKey::Member(
+            tc.manager.service_net_id_for_name(tc.s1),
+            tc.x,
+        ));
         let ready = tc.manager.take_ready_waiters(&freed);
         assert_eq!(ready.len(), 1);
         assert!(ready[0].tid() == &old);
@@ -3542,6 +3632,159 @@ mod tests {
         assert!(matches!(
             tc.manager.services.get(&tc.s1).unwrap().vars.get(&tc.x).unwrap().lock,
             crate::runtime::txn::VarLock::WriteLocked(ref t) if *t == ext
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_service_lock_blocks_member_read_and_write() {
+        let mut tc = TestContext::new();
+        tc.manager
+            .create_service(
+                tc.s1,
+                vec![Decl::VarDecl {
+                    name: tc.x,
+                    ty: None,
+                    val: Expr::Literal {
+                        val: Value::Int { val: 42 },
+                    },
+                }],
+            )
+            .await
+            .unwrap();
+
+        let older = TxnId {
+            timestamp: 1,
+            node_id: 1,
+            iteration: 0,
+        };
+        let younger = TxnId {
+            timestamp: 100,
+            node_id: 1,
+            iteration: 0,
+        };
+
+        // Acquire service lock under older transaction
+        assert!(tc.manager.acquire_service_lock(tc.s1, &older).is_ok());
+
+        // Younger transaction trying to read member should die
+        let res_read = tc.manager.acquire_read_lock(tc.s1, tc.x, &younger);
+        assert!(matches!(res_read, Err(EvalError::WaitDieAbort(_))));
+
+        // Younger transaction trying to write member should die
+        let res_write = tc.manager.acquire_write_lock(tc.s1, tc.x, &younger);
+        assert!(matches!(res_write, Err(EvalError::WaitDieAbort(_))));
+    }
+
+    #[tokio::test]
+    async fn test_member_lock_blocks_service_lock() {
+        let mut tc = TestContext::new();
+        tc.manager
+            .create_service(
+                tc.s1,
+                vec![Decl::VarDecl {
+                    name: tc.x,
+                    ty: None,
+                    val: Expr::Literal {
+                        val: Value::Int { val: 42 },
+                    },
+                }],
+            )
+            .await
+            .unwrap();
+
+        let older = TxnId {
+            timestamp: 1,
+            node_id: 1,
+            iteration: 0,
+        };
+        let younger = TxnId {
+            timestamp: 100,
+            node_id: 1,
+            iteration: 0,
+        };
+
+        // Acquire member write lock under older transaction
+        assert!(tc.manager.acquire_write_lock(tc.s1, tc.x, &older).is_ok());
+
+        // Younger transaction trying to acquire service lock should die
+        let res_svc = tc.manager.acquire_service_lock(tc.s1, &younger);
+        assert!(matches!(res_svc, Err(EvalError::WaitDieAbort(_))));
+
+        // Older transaction should be able to acquire service lock on its own service
+        assert!(tc.manager.acquire_service_lock(tc.s1, &older).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_handle_lock_request_eager_release_on_wait() {
+        let mut tc = TestContext::new();
+        tc.manager
+            .create_service(
+                tc.s1,
+                vec![
+                    Decl::VarDecl {
+                        name: tc.x,
+                        ty: None,
+                        val: Expr::Literal {
+                            val: Value::Int { val: 1 },
+                        },
+                    },
+                    Decl::VarDecl {
+                        name: tc.y,
+                        ty: None,
+                        val: Expr::Literal {
+                            val: Value::Int { val: 2 },
+                        },
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+
+        let younger = TxnId {
+            timestamp: 100,
+            node_id: 1,
+            iteration: 0,
+        };
+        let older = TxnId {
+            timestamp: 1,
+            node_id: 1,
+            iteration: 0,
+        };
+
+        // Younger transaction locks member x
+        assert!(tc.manager.acquire_write_lock(tc.s1, tc.x, &younger).is_ok());
+
+        // Older transaction requests LockGroup covering y and x
+        let mut writes = HashSet::new();
+        writes.insert(tc.manager.interner.get(tc.y).to_string());
+        writes.insert(tc.manager.interner.get(tc.x).to_string());
+        let lg = LockGroup {
+            service_level_lock: false,
+            reads: HashSet::new(),
+            writes,
+        };
+        let mut services = HashMap::new();
+        services.insert(tc.manager.interner.get(tc.s1).to_string(), lg);
+
+        // handle_lock_request yields WaitOn
+        let res = tc
+            .manager
+            .handle_lock_request(older.clone(), services)
+            .await;
+        assert!(matches!(res, Err(EvalError::WaitOn(_, _))));
+
+        // Assert all-or-nothing: lock on y was released upon WaitOn
+        let y_state = tc
+            .manager
+            .services
+            .get(&tc.s1)
+            .unwrap()
+            .vars
+            .get(&tc.y)
+            .unwrap();
+        assert!(matches!(
+            y_state.lock,
+            crate::runtime::txn::VarLock::Unlocked
         ));
     }
 }

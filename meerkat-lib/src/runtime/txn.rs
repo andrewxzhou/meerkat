@@ -8,6 +8,15 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use web_time::{SystemTime, UNIX_EPOCH};
 
+/// Key identifying a resource in the lock wait queue (service or member)
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum WaitKey {
+    /// Service-level lock resource key
+    Service(ServiceNetId),
+    /// Member-level variable lock resource key
+    Member(ServiceNetId, Symbol),
+}
+
 /// A globally unique transaction identifier represented by `TxnId`
 ///
 /// Per the `Historiographer` design, a `tid` is a (unique node
@@ -184,6 +193,21 @@ impl VarLock {
             VarLock::ReadLocked(_) => self.release_read(txn_id),
             VarLock::WriteLocked(_) => self.release_write(txn_id),
             VarLock::Unlocked => {}
+        }
+    }
+
+    /// Return the oldest transaction holding this lock (if any) that is not `ignore_tid`
+    pub fn oldest_other_holder(&self, ignore_tid: &TxnId) -> Option<TxnId> {
+        match self {
+            VarLock::Unlocked => None,
+            VarLock::ReadLocked(set) => set.iter().filter(|tid| *tid != ignore_tid).min().cloned(),
+            VarLock::WriteLocked(tid) => {
+                if tid != ignore_tid {
+                    Some(tid.clone())
+                } else {
+                    None
+                }
+            }
         }
     }
 }

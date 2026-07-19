@@ -8,9 +8,10 @@ use meerkat_lib::net::{
     codec, Address, MeerkatMessage, NetworkCommand, NetworkEvent, NetworkReply, ServiceNetId,
 };
 use meerkat_lib::runtime::ast::{AstPrinter, Stmt};
-use meerkat_lib::runtime::interner::{Interner, Symbol};
+use meerkat_lib::runtime::interner::Interner;
 use meerkat_lib::runtime::interpreter::EvalError;
 use meerkat_lib::runtime::manager::ParkedRequest;
+use meerkat_lib::runtime::txn::WaitKey;
 use meerkat_lib::runtime::{parser, Manager, Node};
 use std::collections::HashSet;
 use std::error::Error;
@@ -343,10 +344,18 @@ async fn run_and_reply_or_park(manager: &mut Manager, parked: ParkedRequest) {
                 // Defensive check: If lock acquisition is blocked
                 // again (e.g., by an older transaction), park the
                 // request in the queue to await future release.
+                // Distinguish service-level from member-level lock
+                // waits: `acquire_service_lock` returns `WaitOn(svc, svc)`
+                // when blocked on a service lock, while member lock
+                // contention returns `WaitOn(svc, member_var)`
                 Err(EvalError::WaitOn(svc, var)) => {
-                    manager.park_request(
-                        svc,
-                        var,
+                    let key = if svc == var {
+                        WaitKey::Service(manager.service_net_id_for_name(svc))
+                    } else {
+                        WaitKey::Member(manager.service_net_id_for_name(svc), var)
+                    };
+                    manager.park_request_key(
+                        key,
                         ParkedRequest::Lock {
                             request_id,
                             reply_to,
@@ -380,7 +389,7 @@ async fn run_and_reply_or_park(manager: &mut Manager, parked: ParkedRequest) {
 
 /// After a holder releases its locks on commit or abort, re-dispatch the parked
 /// requests waiting on the freed variables, oldest first.
-async fn wake_ready(manager: &mut Manager, freed: HashSet<(ServiceNetId, Symbol)>) {
+async fn wake_ready(manager: &mut Manager, freed: HashSet<WaitKey>) {
     for parked in manager.take_ready_waiters(&freed) {
         run_and_reply_or_park(manager, parked).await;
     }
