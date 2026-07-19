@@ -113,12 +113,22 @@ async fn build_swarm(
 
 #[cfg(target_arch = "wasm32")]
 async fn build_swarm(
-    _identity: Option<libp2p::identity::Keypair>,
+    identity_keypair: Option<libp2p::identity::Keypair>,
 ) -> anyhow::Result<(libp2p::Swarm<MeerkatBehaviour>, PeerId)> {
     use libp2p::{core::upgrade, identity, Transport};
 
     // #151: browser clients are ephemeral; a persistent identity is a server
-    // concern, so any provided keypair is ignored here.
+    // concern. If one is provided here it is a likely misuse (e.g. the server
+    // path being wired into a wasm build), so warn to the JS console but keep
+    // going with a fresh ephemeral identity rather than failing.
+    if identity_keypair.is_some() {
+        web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(
+            "meerkat: a persistent identity was provided to a browser (wasm) \
+             client, which always uses an ephemeral identity; the keypair is \
+             ignored.",
+        ));
+    }
+
     let id_keys = identity::Keypair::generate_ed25519();
     let local_peer_id = PeerId::from(id_keys.public());
 
