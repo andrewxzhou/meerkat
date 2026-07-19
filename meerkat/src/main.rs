@@ -15,6 +15,13 @@ use meerkat_lib::runtime::{parser, Manager, Node};
 use std::collections::HashSet;
 use std::error::Error;
 
+#[cfg(debug_assertions)]
+use meerkat_lib::net::types::LockGroup;
+#[cfg(debug_assertions)]
+use meerkat_lib::runtime::txn::TxnId;
+#[cfg(debug_assertions)]
+use std::collections::HashMap;
+
 /// #151: load a persistent libp2p identity keypair from `path`, or create and
 /// save one if the file does not yet exist. Using the same file across runs
 /// keeps the node's Peer ID stable, so a web page can embed a fixed server
@@ -112,11 +119,26 @@ struct Args {
     /// notifications asynchronously as they arrive (issue #24)
     #[arg(long = "watch", default_value_t = false)]
     watch: bool,
+
+    /// Run lock group cascade test client (debug builds only).
+    /// Accepts a test case name; requires -i flags to resolve
+    /// remote service addresses.
+    #[cfg(debug_assertions)]
+    #[arg(long = "test-locks")]
+    test_locks: Option<String>,
 }
 
 #[tokio::main]
 pub async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
+
+    // Intercept normal node execution to run the transitive
+    // lock-group test client. Only compiled in debug builds;
+    // the flag does not exist in release binaries.
+    #[cfg(debug_assertions)]
+    if let Some(ref test_case) = args.test_locks {
+        return run_lock_test_client(test_case, &args.import_urls).await;
+    }
 
     let log_level = if args.verbose {
         log::LevelFilter::Info
@@ -295,6 +317,53 @@ async fn run_and_reply_or_park(manager: &mut Manager, parked: ParkedRequest) {
                     let response = MeerkatMessage::LookupError {
                         request_id,
                         error: e.to_string(),
+                    };
+                    if let Some(net) = manager.network.as_mut() {
+                        net.handle_command(NetworkCommand::SendMessage {
+                            addr: Address::new(&reply_to),
+                            msg: response,
+                        })
+                        .await;
+                    }
+                }
+            }
+        }
+        // Re-dispatch a previously parked LockRequest message.
+        // Attempts lock acquisition again under the transaction.
+        ParkedRequest::Lock {
+            request_id,
+            reply_to,
+            txn_id,
+            services,
+        } => {
+            match manager
+                .handle_lock_request(txn_id.clone(), services.clone())
+                .await
+            {
+                // Defensive check: If lock acquisition is blocked
+                // again (e.g., by an older transaction), park the
+                // request in the queue to await future release.
+                Err(EvalError::WaitOn(svc, var)) => {
+                    manager.park_request(
+                        svc,
+                        var,
+                        ParkedRequest::Lock {
+                            request_id,
+                            reply_to,
+                            txn_id,
+                            services,
+                        },
+                    );
+                }
+                // Terminal outcome: Lock request either succeeded
+                // completely or aborted (died under wait-die). Send
+                // the result back to the originator.
+                other => {
+                    let response = MeerkatMessage::LockResponse {
+                        request_id,
+                        txn_id,
+                        success: other.is_ok(),
+                        error: other.err().map(|e| e.to_string()),
                     };
                     if let Some(net) = manager.network.as_mut() {
                         net.handle_command(NetworkCommand::SendMessage {
@@ -642,6 +711,28 @@ async fn run_server(
                     // abort just released.
                     wake_ready(&mut manager, freed).await;
                 }
+                // Incoming LockRequest from a remote originator node.
+                // Wraps the request as a `ParkedRequest::Lock` and
+                // dispatches it: if locks are free they are acquired
+                // immediately; if blocked, the request parks on the
+                // wait queue and is retried when locks are released.
+                MeerkatMessage::LockRequest {
+                    request_id,
+                    txn_id,
+                    services,
+                    reply_to,
+                } => {
+                    run_and_reply_or_park(
+                        &mut manager,
+                        ParkedRequest::Lock {
+                            request_id,
+                            reply_to,
+                            txn_id,
+                            services,
+                        },
+                    )
+                    .await;
+                }
                 MeerkatMessage::RequestUpdates {
                     service,
                     member,
@@ -735,6 +826,10 @@ async fn run_server(
                 | MeerkatMessage::ActionResponse { .. }
                 | MeerkatMessage::CommitResponse { .. }
                 | MeerkatMessage::AbortResponse { .. }
+                // `LockResponse` is a reply routed back to an
+                // originator via the oneshot reply table. It is not
+                // directly handled by a server's message loop.
+                | MeerkatMessage::LockResponse { .. }
                 // #39: code responses are client-bound replies, not seen at the server.
                 | MeerkatMessage::ServiceCodeResponse { .. }
                 | MeerkatMessage::ServiceCodeError { .. }
@@ -900,6 +995,342 @@ async fn run_client(
             }
             tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         }
+    }
+
+    Ok(())
+}
+
+/// Lock group cascade integration test client (debug builds only).
+///
+/// Drives the distributed transitive locking test suite from a
+/// dedicated client process. Each test case establishes a set of
+/// conflicting or cooperative lock states across the 6-node test
+/// cluster and asserts the expected outcome from the lock protocol.
+///
+/// Args:
+///     test_case (&str): Name of the test scenario to run.
+///     import_urls (&[String]): Remote service URLs (from -i flags).
+///
+/// Returns:
+///     Result<(), Box<dyn Error>>: Ok on success; Err on test failure.
+#[cfg(debug_assertions)]
+async fn run_lock_test_client(
+    test_case: &str,
+    import_urls: &[String],
+) -> Result<(), Box<dyn Error>> {
+    println!("Starting lock test client for case: {}", test_case);
+
+    let mut net = NetworkActor::new(NodeType::Server).await?;
+    let mut manager = Manager::new(Interner::new());
+    manager.local = true;
+
+    // Listen on an ephemeral port so we have a valid reply address.
+    let listen_addr = Address::new("/ip4/127.0.0.1/tcp/0");
+    let reply = net
+        .handle_command(NetworkCommand::Listen { addr: listen_addr })
+        .await;
+    let actual_addr = listen_success_addr(reply)?;
+    let peer_id = net.local_peer_id();
+    let full_addr = format!("{}/p2p/{}", actual_addr.0, peer_id);
+    manager.set_local_address(full_addr);
+
+    manager.network = Some(net);
+
+    // Register all remote service urls from the -i flags so the
+    // manager can resolve service names to network addresses.
+    for url in import_urls {
+        if let Some(slug) = url.split('/').next_back() {
+            let sym = manager.interner.insert(slug);
+            manager
+                .remote_services
+                .insert(sym, Address::new(url.clone()));
+        }
+    }
+
+    match test_case {
+        // Test: cascade_lock_success
+        // Verifies that a LockRequest arriving at Node A cascades
+        // transitively through B/C, D/E, and down to F, and that
+        // all transitive members are successfully read-locked.
+        "cascade_lock_success" => {
+            let svc_a_sym = manager.interner.insert("A");
+            let addr_a = manager.remote_addr(svc_a_sym)?;
+
+            let txn_id = TxnId::new(manager.node_id);
+            let mut services = HashMap::new();
+            services.insert(
+                "A".to_string(),
+                LockGroup {
+                    service_level_lock: false,
+                    reads: HashSet::from(["read_bc".to_string()]),
+                    writes: HashSet::new(),
+                },
+            );
+
+            println!("Sending LockRequest to Node A: {:?}", services);
+            let reply_to = manager.local_reply_addr().await;
+            let reply = manager
+                .send_and_await_reply(
+                    addr_a,
+                    MeerkatMessage::LockRequest {
+                        request_id: 1,
+                        txn_id: txn_id.clone(),
+                        services,
+                        reply_to,
+                    },
+                    1,
+                    "Timeout waiting for lock response from Node A".to_string(),
+                )
+                .await?;
+
+            // Defensive post-condition: assert LockResponse was
+            // received and indicates successful lock acquisition.
+            match reply {
+                MeerkatMessage::LockResponse { success, error, .. } => {
+                    assert!(success, "Lock request failed: {:?}", error);
+                    println!("PASS: lock cascaded successfully!");
+                }
+                other => panic!("Unexpected reply: {:?}", other),
+            }
+        }
+
+        // Test: cascade_abort_wait_die
+        // Verifies that a younger transaction starting a cascading
+        // LockRequest immediately aborts (dies) when an older
+        // transaction already holds a conflicting write lock on
+        // Node F, per the wait-die deadlock prevention protocol.
+        "cascade_abort_wait_die" => {
+            let svc_f_sym = manager.interner.insert("F");
+            let addr_f = manager.remote_addr(svc_f_sym)?;
+
+            // Phase 1: Establish a high-priority (old) conflicting
+            // write lock on Node F.
+            let conflict_txn_id = TxnId {
+                timestamp: 1,
+                node_id: 999,
+                iteration: 0,
+            };
+            let mut services_f = HashMap::new();
+            services_f.insert(
+                "F".to_string(),
+                LockGroup {
+                    service_level_lock: false,
+                    reads: HashSet::new(),
+                    writes: HashSet::from(["val_f".to_string()]),
+                },
+            );
+
+            println!("Acquiring conflict write-lock on F...");
+            let reply_to = manager.local_reply_addr().await;
+            let reply = manager
+                .send_and_await_reply(
+                    addr_f.clone(),
+                    MeerkatMessage::LockRequest {
+                        request_id: 1,
+                        txn_id: conflict_txn_id.clone(),
+                        services: services_f,
+                        reply_to,
+                    },
+                    1,
+                    "Timeout write-locking val_f on F".to_string(),
+                )
+                .await?;
+            // Defensive pre-condition: conflict lock must succeed
+            // before testing that wait-die correctly aborts the
+            // younger conflicting transaction.
+            assert!(matches!(
+                reply,
+                MeerkatMessage::LockResponse { success: true, .. }
+            ));
+
+            // Phase 2: Start a low-priority (young) transaction on
+            // Node A. It should cascade to F and abort immediately.
+            let txn_id = TxnId {
+                timestamp: 1000,
+                node_id: 1,
+                iteration: 0,
+            };
+            let svc_a_sym = manager.interner.insert("A");
+            let addr_a = manager.remote_addr(svc_a_sym)?;
+
+            let mut services_a = HashMap::new();
+            services_a.insert(
+                "A".to_string(),
+                LockGroup {
+                    service_level_lock: false,
+                    reads: HashSet::from(["read_bc".to_string()]),
+                    writes: HashSet::new(),
+                },
+            );
+
+            println!(
+                "Sending LockRequest to A (should conflict and \
+                 wait-die)..."
+            );
+            let reply_to = manager.local_reply_addr().await;
+            let reply = manager
+                .send_and_await_reply(
+                    addr_a,
+                    MeerkatMessage::LockRequest {
+                        request_id: 2,
+                        txn_id: txn_id.clone(),
+                        services: services_a,
+                        reply_to,
+                    },
+                    2,
+                    "Timeout waiting for lock response from Node A".to_string(),
+                )
+                .await?;
+
+            // Defensive post-condition: assert the younger txn
+            // was rejected with a wait-die abort error string.
+            match reply {
+                MeerkatMessage::LockResponse { success, error, .. } => {
+                    assert!(
+                        !success,
+                        "Lock request should have failed due to \
+                         wait-die"
+                    );
+                    let err_str = error.unwrap();
+                    println!("Lock response failed as expected: {}", err_str);
+                    assert!(err_str.contains("died contending"));
+                    println!(
+                        "PASS: lock cascaded and aborted \
+                         successfully via wait-die!"
+                    );
+                }
+                other => panic!("Unexpected reply: {:?}", other),
+            }
+        }
+
+        // Test: cascade_lock_wait
+        // Verifies that an older transaction that blocks on a
+        // younger transaction's lock correctly parks and is woken
+        // when the younger transaction commits.
+        "cascade_lock_wait" => {
+            let svc_f_sym = manager.interner.insert("F");
+            let addr_f = manager.remote_addr(svc_f_sym)?;
+
+            // Phase 1: Establish a low-priority (young) write lock
+            // on Node F to create the blocking condition.
+            let conflict_txn_id = TxnId {
+                timestamp: 10000,
+                node_id: 1,
+                iteration: 0,
+            };
+            let mut services_f = HashMap::new();
+            services_f.insert(
+                "F".to_string(),
+                LockGroup {
+                    service_level_lock: false,
+                    reads: HashSet::new(),
+                    writes: HashSet::from(["val_f".to_string()]),
+                },
+            );
+
+            println!("Acquiring younger write-lock on F...");
+            let reply_to = manager.local_reply_addr().await;
+            let reply = manager
+                .send_and_await_reply(
+                    addr_f.clone(),
+                    MeerkatMessage::LockRequest {
+                        request_id: 1,
+                        txn_id: conflict_txn_id.clone(),
+                        services: services_f,
+                        reply_to,
+                    },
+                    1,
+                    "Timeout write-locking val_f on F".to_string(),
+                )
+                .await?;
+            // Defensive pre-condition: conflict lock must be held
+            // before the older transaction attempts to cascade.
+            assert!(matches!(
+                reply,
+                MeerkatMessage::LockResponse { success: true, .. }
+            ));
+
+            // Phase 2: Start a high-priority (old) transaction on
+            // Node A that cascades to F and parks waiting.
+            let txn_id = TxnId {
+                timestamp: 5,
+                node_id: 1,
+                iteration: 0,
+            };
+            let svc_a_sym = manager.interner.insert("A");
+            let addr_a = manager.remote_addr(svc_a_sym)?;
+
+            let mut services_a = HashMap::new();
+            services_a.insert(
+                "A".to_string(),
+                LockGroup {
+                    service_level_lock: false,
+                    reads: HashSet::from(["read_bc".to_string()]),
+                    writes: HashSet::new(),
+                },
+            );
+
+            // Phase 3: Spawn a background task that commits the
+            // conflict transaction on F after a delay, releasing
+            // the lock and waking the parked older transaction.
+            let addr_f_clone = addr_f.clone();
+            let conflict_txn_id_clone = conflict_txn_id.clone();
+            let reply_to_addr = manager.local_reply_addr().await;
+            tokio::spawn(async move {
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                println!(
+                    "Background task: committing conflict \
+                     transaction on F to wake older lock request..."
+                );
+                if let Ok(mut temp_net) = NetworkActor::new(NodeType::Server).await {
+                    let msg = MeerkatMessage::Commit {
+                        request_id: 99,
+                        txn_id: conflict_txn_id_clone,
+                        reply_to: reply_to_addr,
+                    };
+                    let _ = temp_net
+                        .handle_command(NetworkCommand::SendMessage {
+                            addr: addr_f_clone,
+                            msg,
+                        })
+                        .await;
+                }
+            });
+
+            println!(
+                "Sending LockRequest to A (should block on F, \
+                 then get woken up and succeed)..."
+            );
+            let reply_to = manager.local_reply_addr().await;
+            let reply = manager
+                .send_and_await_reply(
+                    addr_a,
+                    MeerkatMessage::LockRequest {
+                        request_id: 2,
+                        txn_id: txn_id.clone(),
+                        services: services_a,
+                        reply_to,
+                    },
+                    2,
+                    "Timeout waiting for lock response from Node A".to_string(),
+                )
+                .await?;
+
+            // Defensive post-condition: the older transaction must
+            // have been woken successfully and its lock acquired.
+            match reply {
+                MeerkatMessage::LockResponse { success, error, .. } => {
+                    assert!(success, "Lock request failed: {:?}", error);
+                    println!(
+                        "PASS: lock cascaded and succeeded after \
+                         wait/wake!"
+                    );
+                }
+                other => panic!("Unexpected reply: {:?}", other),
+            }
+        }
+
+        _ => return Err(format!("Unknown lock test case: {}", test_case).into()),
     }
 
     Ok(())

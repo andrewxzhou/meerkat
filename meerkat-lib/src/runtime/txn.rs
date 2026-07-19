@@ -226,6 +226,8 @@ pub struct Transaction {
     pub id: TxnId,
     /// Pairs of `(ServiceNetId, Symbol)` this transaction currently holds a lock on
     pub locked: HashSet<(ServiceNetId, Symbol)>,
+    /// Services this transaction currently holds a whole-service lock on
+    pub service_locked: HashSet<ServiceNetId>,
     /// Values already read in this transaction, keyed by (service, variable)
     /// (avoids re-fetching, including redundant network round-trips)
     pub read_cache: HashMap<(ServiceNetId, Symbol), Value>,
@@ -244,6 +246,7 @@ impl Transaction {
         Transaction {
             id,
             locked: HashSet::new(),
+            service_locked: HashSet::new(),
             read_cache: HashMap::new(),
             written: HashMap::new(),
             participants: HashSet::new(),
