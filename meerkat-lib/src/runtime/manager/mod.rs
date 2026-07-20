@@ -2036,6 +2036,14 @@ impl Manager {
                 self.release_locks(&freed, &txn.id);
                 txn.locked.clear();
                 txn.service_locked.clear();
+
+                // Drain and explicitly abort sub-participants to release
+                // remote partial locks
+                for addr in txn.participants.drain().collect::<Vec<_>>() {
+                    self.send_abort(addr, &txn.id).await;
+                }
+                debug_assert!(txn.participants.is_empty());
+
                 self.pending_txns.insert(txn_id, txn);
                 Err(EvalError::WaitOn(svc, var))
             }
@@ -3776,14 +3784,22 @@ mod tests {
         let mut services = HashMap::new();
         services.insert(tc.manager.interner.get(tc.s1).to_string(), lg);
 
-        // handle_lock_request yields WaitOn
+        // Seed the older transaction in `pending_txns` with a dummy
+        // participant address to verify that `participants` are drained
+        let mut pre_txn = crate::runtime::txn::Transaction::new(older.clone());
+        pre_txn
+            .participants
+            .insert(crate::net::types::Address("remote:1234".to_string()));
+        tc.manager.pending_txns.insert(older.clone(), pre_txn);
+
+        // `handle_lock_request` yields `WaitOn`
         let res = tc
             .manager
             .handle_lock_request(older.clone(), services)
             .await;
         assert!(matches!(res, Err(EvalError::WaitOn(_, _))));
 
-        // Assert all-or-nothing: lock on y was released upon WaitOn
+        // Assert all-or-nothing: lock on `y` was released upon `WaitOn`
         let y_state = tc
             .manager
             .services
@@ -3796,5 +3812,9 @@ mod tests {
             y_state.lock,
             crate::runtime::txn::VarLock::Unlocked
         ));
+
+        // Assert all-or-nothing: `participants` were drained on `WaitOn`
+        let parked_txn = tc.manager.pending_txns.get(&older).unwrap();
+        assert!(parked_txn.participants.is_empty());
     }
 }
