@@ -17,11 +17,11 @@ MANIFESTS = [
         "scripts/tests/integration/lock_group/success.json",
     ),
     (
-        "cascade_lock_abort_wait_die",
+        "cascade_abort_wait_die",
         "scripts/tests/integration/lock_group/abort.json",
     ),
     (
-        "cascade_lock_wait_wake",
+        "cascade_lock_wait",
         "scripts/tests/integration/lock_group/wait.json",
     ),
 ]
@@ -68,7 +68,7 @@ def main():
     start = time.monotonic()
 
     for name, manifest in MANIFESTS:
-        if run_mkn(name, manifest):
+        if run_mkn(name, manifest) == True:
             passed += 1
         else:
             failed += 1
