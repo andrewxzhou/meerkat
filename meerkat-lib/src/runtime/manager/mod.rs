@@ -2010,6 +2010,9 @@ impl Manager {
         txn_id: TxnId,
         services: HashMap<String, LockGroup>,
     ) -> Result<(), EvalError> {
+        codec::validate_lock_request(&services)
+            .map_err(|e| EvalError::RuntimeError(e.to_string()))?;
+
         let mut txn = self
             .pending_txns
             .remove(&txn_id)
@@ -3816,5 +3819,27 @@ mod tests {
         // Assert all-or-nothing: `participants` were drained on `WaitOn`
         let parked_txn = tc.manager.pending_txns.get(&older).unwrap();
         assert!(parked_txn.participants.is_empty());
+    }
+
+    /// Verify that handle_lock_request rejects requests with invalid identifiers before interning
+    #[tokio::test]
+    async fn test_handle_lock_request_invalid_identifier_rejected() {
+        let interner = Interner::new();
+        let mut manager = Manager::new(interner);
+
+        let txn_id = TxnId::new(1);
+        let mut services = HashMap::new();
+        services.insert(
+            "bad-service-name!".to_string(),
+            LockGroup {
+                service_level_lock: false,
+                reads: HashSet::new(),
+                writes: HashSet::new(),
+            },
+        );
+
+        let res = manager.handle_lock_request(txn_id, services).await;
+        assert!(res.is_err());
+        assert!(matches!(res, Err(EvalError::RuntimeError(_))));
     }
 }

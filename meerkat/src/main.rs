@@ -541,6 +541,20 @@ async fn run_server(
                     reply_to,
                     txn_id,
                 } => {
+                    if let Err(e) = codec::validate_lookup_request(&service, &member) {
+                        let response = MeerkatMessage::LookupError {
+                            request_id,
+                            error: e.to_string(),
+                        };
+                        if let Some(net) = manager.network.as_mut() {
+                            net.handle_command(NetworkCommand::SendMessage {
+                                addr: Address::new(&reply_to),
+                                msg: response,
+                            })
+                            .await;
+                        }
+                        continue;
+                    }
                     let svc_sym = manager.interner.insert(&service);
                     let mem_sym = manager.interner.insert(&member);
                     match txn_id {
@@ -595,6 +609,21 @@ async fn run_server(
                     reply_to,
                     txn_id,
                 } => {
+                    if let Err(e) = codec::validate_action_request(&service) {
+                        let response = MeerkatMessage::ActionResponse {
+                            request_id,
+                            success: false,
+                            error: Some(e.to_string()),
+                        };
+                        if let Some(net) = manager.network.as_mut() {
+                            net.handle_command(NetworkCommand::SendMessage {
+                                addr: Address::new(&reply_to),
+                                msg: response,
+                            })
+                            .await;
+                        }
+                        continue;
+                    }
                     let svc_sym = manager.interner.insert(&service);
                     let mut local_stmts = Vec::new();
                     let mut decode_failed = false;
@@ -731,6 +760,22 @@ async fn run_server(
                     services,
                     reply_to,
                 } => {
+                    if let Err(e) = codec::validate_lock_request(&services) {
+                        let response = MeerkatMessage::LockResponse {
+                            request_id,
+                            txn_id,
+                            success: false,
+                            error: Some(e.to_string()),
+                        };
+                        if let Some(net) = manager.network.as_mut() {
+                            net.handle_command(NetworkCommand::SendMessage {
+                                addr: Address::new(&reply_to),
+                                msg: response,
+                            })
+                            .await;
+                        }
+                        continue;
+                    }
                     run_and_reply_or_park(
                         &mut manager,
                         ParkedRequest::Lock {
