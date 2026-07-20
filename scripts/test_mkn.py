@@ -417,16 +417,24 @@ LOCK_GROUP_RUNNER = (
 def run_lock_group_suite():
     """Delegate to the lock group integration suite runner.
 
-    Spawns run_lock_tests.py as a subprocess so its cargo-style output
-    is streamed directly to stdout.
+    Spawns `LOCK_GROUP_RUNNER` as a subprocess so its cargo-style
+    output is streamed directly to stdout with a 90-second timeout
 
     Returns:
-        bool: True if the suite passed.
+        `bool`: `True` if the suite passed and did not time out
     """
-    result = subprocess.run(
-        [sys.executable, LOCK_GROUP_RUNNER],
-    )
-    return result.returncode == 0
+    try:
+        result = subprocess.run(
+            [sys.executable, LOCK_GROUP_RUNNER],
+            timeout=90,
+        )
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        print(
+            "\nFAIL: lock group suite timed out (90s)",
+            file=sys.stderr,
+        )
+        return False
 
 
 # ---------------------------------------------------------------------------
