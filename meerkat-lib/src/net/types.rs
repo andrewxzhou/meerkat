@@ -165,6 +165,7 @@ pub enum MeerkatMessage {
         source_service: String,
         member: String,
         value: NetValue,
+        clock: VClock,
     },
 
     /// #39: request the source of a `.mkt` file by path. A (browser) client

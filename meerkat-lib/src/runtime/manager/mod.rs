@@ -7,7 +7,7 @@ use crate::net::{
     ServiceNetId,
 };
 use crate::runtime::interner::{Interner, Symbol};
-use crate::runtime::txn::{Transaction, TxnId, VarState};
+use crate::runtime::txn::{Transaction, TxnId, VClock, VarState};
 use std::collections::{HashMap, HashSet};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
@@ -25,7 +25,7 @@ pub struct Service {
     pub listeners: HashMap<Symbol, HashSet<(ServiceNetId, Symbol)>>,
     /// #24: cached values of each def's cross-service deps:
     /// def -> {(source service, member) -> value}.
-    pub dep_cache: HashMap<Symbol, HashMap<(Symbol, Symbol), Value>>,
+    pub dep_cache: HashMap<Symbol, HashMap<(Symbol, Symbol), (Value, VClock)>>,
 }
 
 /// A remote request parked on a variable's wait queue because the requesting
@@ -531,7 +531,10 @@ impl Manager {
         if let Some(service) = self.services.get_mut(&service_name) {
             if let Some(var_state) = service.vars.get_mut(&var_name) {
                 var_state.value = value;
+                self.simultaneous_bump(&HashSet::new(), &HashSet::from([(service_name, var_name)]));
             } else {
+                // in theory we should enventually never encounter this after nameres is fully integrated
+                // keep this in mind to guide future development
                 return Err(EvalError::VarNotFound(format!(
                     "Variable '{}' not found in service '{}'",
                     self.interner.get(var_name),
@@ -548,6 +551,53 @@ impl Manager {
         // propagate: re-evaluate defs that depend on this var in topo order
         self.propagate(service_name, var_name).await;
         Ok(())
+    }
+
+    // helper function to get the vector clock for a particular var def
+    fn get_clock(&self, service_name: &Symbol, var: &Symbol) -> Option<&VClock> {
+        let svc = self.services.get(service_name)?;
+        let vars = svc.vars.get(var)?;
+        Some(&vars.vector_clock)
+    }
+
+    // helper function to apply a simultaneous bump, as described in section 5.2 of vector clock semantics
+    fn simultaneous_bump(
+        &mut self,
+        read_set: &HashSet<(Symbol, Symbol)>,
+        write_set: &HashSet<(Symbol, Symbol)>,
+    ) -> VClock {
+        let mut vclocks: Vec<&VClock> = Vec::new();
+        // get all the vclocks first
+        for (svc, var) in read_set.union(write_set) {
+            match self.get_clock(svc, var) {
+                Some(clock) => vclocks.push(&clock),
+                None => {
+                    log::warn!(
+                        "simultaneous_bump: clock for var {} in service {} not found",
+                        self.interner.get(*var),
+                        self.interner.get(*svc)
+                    );
+                }
+            }
+        }
+        // compute the max over all vclocks
+        let mut v_base: VClock = HashMap::new();
+        for clk in &vclocks {
+            for (dim, &c) in *clk {
+                let e = v_base.entry(*dim).or_insert(0);
+                *e = (*e).max(c);
+            }
+        }
+        // increment if they're in the write_set
+        for (svc, var) in write_set {
+            *v_base.entry((*svc, *var)).or_insert(0) += 1;
+        }
+        for (svc, var) in write_set {
+            if let Some(vs) = self.services.get_mut(svc).and_then(|s| s.vars.get_mut(var)) {
+                vs.vector_clock = v_base.clone(); // write the new base vector clock back to everything in the write set
+            }
+        }
+        v_base
     }
 
     async fn propagate(&mut self, service_name: Symbol, changed_var: Symbol) {
@@ -590,10 +640,65 @@ impl Manager {
         }
     }
 
+    // compute v_target from vector clock semantics 5.3 by taking max over all dependent vector clocks
+    // then, determine whether it is glitch-free or not
+    fn compute_v_target(&self, curr_svc : &Service, def: &Symbol) -> (VClock, bool) {
+        // get all vclocks of dependencies
+        let mut vclocks: Vec<&VClock> = Vec::new();
+
+        // local inputs
+        match curr_svc.dep.dep_graph.get(&def) {
+            Some(local_deps) => {
+                for name in local_deps {
+                    match curr_svc.vars.get(name) {
+                        Some(vs) => vclocks.push(&vs.vector_clock),
+                        None => log::warn!(
+                            "gate: local dep '{}' of def '{}' missing from vars",
+                            self.interner.get(*name),
+                            self.interner.get(*def),
+                        ),
+                    }
+                }
+            }
+            None => log::warn!(
+                "gate: def '{}' missing from dep_graph in service '{}'",
+                self.interner.get(*def),
+                self.interner.get(curr_svc.name),
+            ),
+        }
+
+        // cross-service inputs
+        if let Some(deps) = curr_svc.dep_cache.get(&def) {
+            for (_, clk) in deps.values() {
+                vclocks.push(clk);
+            }
+        }
+
+        // compute v_target by taking max over all dependent vector clocks
+        let mut v_target: VClock = HashMap::new();
+        for clk in &vclocks {
+            for (dim, &c) in *clk {
+                let e = v_target.entry(*dim).or_insert(0);
+                *e = (*e).max(c);
+            }
+        }
+        // gate: every input clock is >= v_target
+        let gate_ok = vclocks.iter().all(|clk| {
+            clk.iter()
+                .all(|(dim, &c)| c >= v_target.get(dim).copied().unwrap_or(0))
+        });
+        (v_target, gate_ok)
+    }
+
     /// #24: recompute `def` in `svc` from current values, seeding the reactive
     /// cache with this def's cached cross-service deps so MemberAccess resolves
     /// from cache instead of a (possibly remote) lookup. Returns whether the
     /// stored value changed.
+
+    /// Vector clock PR update: to make sure that recomputing defs is safe
+    /// we add a check against the vector clocks of the dependencies of the def.
+    /// specifically, we check that for all dependent variables v that def depends on,
+    /// v has the same clock value in every vector clock stored by all vs
     async fn recompute_def(&mut self, svc: Symbol, def: Symbol) -> bool {
         let expr = match self
             .services
@@ -620,55 +725,78 @@ impl Manager {
             .services
             .get(&svc)
             .and_then(|s| s.dep_cache.get(&def))
-            .cloned()
+            // remove vector clocks for dep_cache to get reactive_cache to typecheck
+            .map(|m| m.iter().map(|(k, (v, _clk))| (*k, v.clone())).collect())
             .unwrap_or_default();
 
-        self.reactive_cache = Some(cache);
-        let result = eval(
-            &expr,
-            &env,
-            &mut EvalContext {
-                manager: self,
-                service_name: svc,
-                txn: None,
-            },
-        )
-        .await;
-        // The reactive cache is only valid for the single recompute above (its
-        // entries are this def's cached cross-service deps), so clear it before
-        // returning to avoid leaking stale entries into later evaluations.
-        self.reactive_cache = None;
+        
 
-        let value = match result {
-            Ok(v) => v,
-            Err(e) => {
+        let curr_svc = match self.services.get(&svc) {
+            Some(svc) => svc,
+            None => {
                 log::warn!(
-                    "propagation of def '{}' failed: {}",
+                    "recompute_def: def '{}' not found in service '{}'",
                     self.interner.get(def),
-                    e
+                    self.interner.get(svc)
                 );
                 return false;
             }
         };
 
-        match self
-            .services
-            .get_mut(&svc)
-            .and_then(|s| s.vars.get_mut(&def))
-        {
-            Some(var_state) => {
-                let differs = var_state.value != value;
-                var_state.value = value;
-                differs
+        let (v_target, gate_ok) = self.compute_v_target(curr_svc, &def);
+
+        if gate_ok {
+            self.reactive_cache = Some(cache);
+            
+            let result = eval(
+                &expr,
+                &env,
+                &mut EvalContext {
+                    manager: self,
+                    service_name: svc,
+                    txn: None,
+                },
+            )
+            .await;
+
+            // The reactive cache is only valid for the single recompute above (its
+            // entries are this def's cached cross-service deps), so clear it before
+            // returning to avoid leaking stale entries into later evaluations.
+            self.reactive_cache = None;
+
+            let value = match result {
+                Ok(v) => v,
+                Err(e) => {
+                    log::warn!(
+                        "propagation of def '{}' failed: {}",
+                        self.interner.get(def),
+                        e
+                    );
+                    return false;
+                }
+            };
+            match self
+                .services
+                .get_mut(&svc)
+                .and_then(|s| s.vars.get_mut(&def))
+            {
+                Some(var_state) => {
+                    let differs = var_state.value != value;
+                    var_state.value = value;
+                    var_state.vector_clock = v_target;
+                    differs
+                }
+                None => {
+                    log::warn!(
+                        "recompute_def: def '{}' in service '{}' disappeared after recompute",
+                        self.interner.get(def),
+                        self.interner.get(svc)
+                    );
+                    false
+                }
             }
-            None => {
-                log::warn!(
-                    "recompute_def: def '{}' in service '{}' disappeared after recompute",
-                    self.interner.get(def),
-                    self.interner.get(svc)
-                );
-                false
-            }
+        } else {
+            return false;
         }
     }
 
@@ -844,7 +972,8 @@ impl Manager {
             svc.dep_cache
                 .entry(listener_def_sym)
                 .or_default()
-                .insert((source_sym, member_sym), value);
+                .insert((source_sym, member_sym), (value, HashMap::new()));
+            // TODO: change vector clock here to not be a placeholder
         }
 
         if self.recompute_def(listener_svc, listener_def_sym).await {
@@ -1743,6 +1872,20 @@ impl Manager {
                 }
             }
         }
+
+        // before we propagate, need to apply simultaneous bump
+        let write_set: HashSet<(Symbol, Symbol)> = txn
+            .written
+            .keys()
+            .filter_map(|(sid, var)| self.service_name_for_net_id(sid).map(|n| (n, *var)))
+            .collect();
+        let read_set: HashSet<(Symbol, Symbol)> = txn
+            .read_cache
+            .keys()
+            .filter_map(|(sid, var)| self.service_name_for_net_id(sid).map(|n| (n, *var)))
+            .collect();
+        // for now, we don't need the resulting v_base, but we will in the future
+        self.simultaneous_bump(&read_set, &write_set); // returns V_new; discarded in M1
         for ((sid, var), _) in &writes {
             if let Some(name) = self.service_name_for_net_id(sid) {
                 self.propagate(name, *var).await;
@@ -2324,6 +2467,311 @@ mod tests {
             .unwrap();
         let result = tc.manager.lookup(tc.f, tc.foo, None).await.unwrap();
         assert_eq!(result, Value::Int { val: 15 });
+    }
+
+    // ---- vector-clock local-diamond tests ----
+
+    fn vint(n: i32) -> Value {
+        Value::Int { val: n }
+    }
+    fn lit_int(n: i32) -> Expr {
+        Expr::Literal { val: vint(n) }
+    }
+    fn mk_add(e1: Expr, e2: Expr) -> Expr {
+        Expr::Binop {
+            op: crate::ast::BinOp::Add,
+            expr1: Box::new(e1),
+            expr2: Box::new(e2),
+        }
+    }
+
+    // Local diamond in one service:
+    //   var x = 1
+    //   def a = x + 10
+    //   def b = x + 20
+    //   def q = a + b
+    // A single write to x must reach the sink q as one consistent generation.
+    // With the glitch gate, q recomputes only once a and b agree on x's clock,
+    // so q never observes a mixed (old a, new b) cut — a glitch would surface as
+    // q == 33 (11+22 or 12+21). We check both the final value and that every node
+    // on the frontier carries the same vector clock.
+    #[tokio::test]
+    async fn test_local_diamond_glitch_free() {
+        let mut tc = TestContext::new();
+        let a = tc.manager.interner.insert("a");
+        let b = tc.manager.interner.insert("b");
+        let q = tc.manager.interner.insert("q");
+
+        let decls = vec![
+            Decl::VarDecl {
+                name: tc.x,
+                ty: None,
+                val: lit_int(1),
+            },
+            Decl::DefDecl {
+                name: a,
+                ty: None,
+                val: mk_add(Expr::Variable { name: tc.x }, lit_int(10)),
+                is_pub: true,
+            },
+            Decl::DefDecl {
+                name: b,
+                ty: None,
+                val: mk_add(Expr::Variable { name: tc.x }, lit_int(20)),
+                is_pub: true,
+            },
+            Decl::DefDecl {
+                name: q,
+                ty: None,
+                val: mk_add(Expr::Variable { name: a }, Expr::Variable { name: b }),
+                is_pub: true,
+            },
+        ];
+        tc.manager.create_service(tc.foo, decls).await.unwrap();
+
+        // initial: a = 11, b = 21, q = 32
+        assert_eq!(tc.manager.lookup(q, tc.foo, None).await.unwrap(), vint(32));
+
+        // write x = 2  ->  a = 12, b = 22, q = 34
+        tc.manager.assign(tc.foo, tc.x, vint(2), None).await.unwrap();
+        assert_eq!(
+            tc.manager.lookup(q, tc.foo, None).await.unwrap(),
+            vint(34),
+            "sink must reflect the fully-updated generation, never a glitch (33)"
+        );
+
+        // one write to x => generation 1 on dimension (foo, x). Every node on the
+        // frontier — the two intermediates and the sink — must agree on it.
+        let foo = tc.manager.services.get(&tc.foo).unwrap();
+        let frontier: VClock = HashMap::from([((tc.foo, tc.x), 1u64)]);
+        assert_eq!(
+            foo.vars.get(&tc.x).unwrap().vector_clock,
+            frontier,
+            "x bumped to generation 1"
+        );
+        assert_eq!(
+            foo.vars.get(&a).unwrap().vector_clock,
+            frontier,
+            "a joined x's clock"
+        );
+        assert_eq!(
+            foo.vars.get(&b).unwrap().vector_clock,
+            frontier,
+            "b joined x's clock"
+        );
+        assert_eq!(
+            foo.vars.get(&q).unwrap().vector_clock,
+            frontier,
+            "sink q carries the joined frontier"
+        );
+    }
+
+    // Overwrite a node's stored value and clock directly, to stage an
+    // inconsistent frontier the synchronous cascade would never leave behind.
+    fn stage_node(mgr: &mut Manager, svc: Symbol, name: Symbol, value: Value, clock: VClock) {
+        let vs = mgr
+            .services
+            .get_mut(&svc)
+            .unwrap()
+            .vars
+            .get_mut(&name)
+            .unwrap();
+        vs.value = value;
+        vs.vector_clock = clock;
+    }
+
+    // Targeted defer-path test. The synchronous cascade always finishes in a
+    // consistent state, so to hit the gate's DEFER branch directly we stage the
+    // frontier by hand:
+    //   var x = 1;  def a = x + 10;  def q = a + x;
+    // After settling at generation 1, we bump x to generation 2 with a NEW value
+    // but leave a at generation 1 (as if a's recompute hasn't happened yet).
+    // q's inputs now disagree on x's dimension, so recompute_def(q) must defer —
+    // otherwise q would glitch to a + x = 12 + 5 = 17. Once a catches up to
+    // generation 2, the gate is satisfied and q recomputes.
+    #[tokio::test]
+    async fn test_gate_defers_on_stale_input() {
+        let mut tc = TestContext::new();
+        let a = tc.manager.interner.insert("a");
+        let q = tc.manager.interner.insert("q");
+
+        let decls = vec![
+            Decl::VarDecl {
+                name: tc.x,
+                ty: None,
+                val: lit_int(1),
+            },
+            Decl::DefDecl {
+                name: a,
+                ty: None,
+                val: mk_add(Expr::Variable { name: tc.x }, lit_int(10)),
+                is_pub: true,
+            },
+            Decl::DefDecl {
+                name: q,
+                ty: None,
+                val: mk_add(Expr::Variable { name: a }, Expr::Variable { name: tc.x }),
+                is_pub: true,
+            },
+        ];
+        tc.manager.create_service(tc.foo, decls).await.unwrap();
+
+        let gen1: VClock = HashMap::from([((tc.foo, tc.x), 1u64)]);
+        let gen2: VClock = HashMap::from([((tc.foo, tc.x), 2u64)]);
+
+        // settle at generation 1: x = 2, a = 12, q = 14
+        tc.manager.assign(tc.foo, tc.x, vint(2), None).await.unwrap();
+        assert_eq!(tc.manager.lookup(q, tc.foo, None).await.unwrap(), vint(14));
+
+        // stage the inconsistency: x jumps to generation 2 with a new value,
+        // while a is left behind at generation 1 with its old value.
+        stage_node(&mut tc.manager, tc.foo, tc.x, vint(5), gen2.clone());
+
+        // gate must DEFER: a (gen 1) lags x (gen 2) on dimension (foo, x).
+        let changed = tc.manager.recompute_def(tc.foo, q).await;
+        assert!(!changed, "gate should defer while a is stale relative to x");
+        {
+            let foo = tc.manager.services.get(&tc.foo).unwrap();
+            assert_eq!(
+                foo.vars.get(&q).unwrap().value,
+                vint(14),
+                "q must keep its consistent value, not glitch to 17"
+            );
+            assert_eq!(
+                foo.vars.get(&q).unwrap().vector_clock,
+                gen1,
+                "q's clock is unchanged while deferred"
+            );
+        }
+
+        // a catches up to generation 2; now the gate passes and q recomputes.
+        stage_node(&mut tc.manager, tc.foo, a, vint(15), gen2.clone());
+        let changed = tc.manager.recompute_def(tc.foo, q).await;
+        assert!(changed, "gate should pass once a reaches generation 2");
+        {
+            let foo = tc.manager.services.get(&tc.foo).unwrap();
+            assert_eq!(
+                foo.vars.get(&q).unwrap().value,
+                vint(20),
+                "q = a + x = 15 + 5"
+            );
+            assert_eq!(
+                foo.vars.get(&q).unwrap().vector_clock,
+                gen2,
+                "q joins the generation-2 frontier"
+            );
+        }
+    }
+
+    // Simultaneity (operation A): all vars co-written in one transaction end
+    // with the SAME vector, not per-var stamps. W = {x, y}, R = ∅.
+    #[tokio::test]
+    async fn test_simultaneous_bump_identical_stamp() {
+        let mut tc = TestContext::new();
+        let decls = vec![
+            Decl::VarDecl {
+                name: tc.x,
+                ty: None,
+                val: lit_int(1),
+            },
+            Decl::VarDecl {
+                name: tc.y,
+                ty: None,
+                val: lit_int(2),
+            },
+        ];
+        tc.manager.create_service(tc.foo, decls).await.unwrap();
+
+        let w = HashSet::from([(tc.foo, tc.x), (tc.foo, tc.y)]);
+        tc.manager.simultaneous_bump(&HashSet::new(), &w);
+
+        let foo = tc.manager.services.get(&tc.foo).unwrap();
+        let xc = foo.vars.get(&tc.x).unwrap().vector_clock.clone();
+        let yc = foo.vars.get(&tc.y).unwrap().vector_clock.clone();
+        let expected: VClock = HashMap::from([((tc.foo, tc.x), 1), ((tc.foo, tc.y), 1)]);
+        assert_eq!(xc, expected);
+        assert_eq!(yc, expected);
+        assert_eq!(xc, yc, "co-written vars must share one identical stamp");
+    }
+
+    // Causal consistency (operation A): the read set is folded into V_base, so a
+    // written var's clock dominates the vars it read. R = {y}, W = {x}.
+    #[tokio::test]
+    async fn test_bump_absorbs_read_set() {
+        let mut tc = TestContext::new();
+        let decls = vec![
+            Decl::VarDecl {
+                name: tc.x,
+                ty: None,
+                val: lit_int(1),
+            },
+            Decl::VarDecl {
+                name: tc.y,
+                ty: None,
+                val: lit_int(2),
+            },
+        ];
+        tc.manager.create_service(tc.foo, decls).await.unwrap();
+
+        // advance y to generation 1 first
+        tc.manager.assign(tc.foo, tc.y, vint(9), None).await.unwrap();
+        // now write x having READ y
+        tc.manager.simultaneous_bump(
+            &HashSet::from([(tc.foo, tc.y)]),
+            &HashSet::from([(tc.foo, tc.x)]),
+        );
+
+        let xc = &tc
+            .manager
+            .services
+            .get(&tc.foo)
+            .unwrap()
+            .vars
+            .get(&tc.x)
+            .unwrap()
+            .vector_clock;
+        assert_eq!(
+            xc.get(&(tc.foo, tc.y)).copied(),
+            Some(1),
+            "x dominates the y it read"
+        );
+        assert_eq!(
+            xc.get(&(tc.foo, tc.x)).copied(),
+            Some(1),
+            "x still +1 on its own dimension"
+        );
+    }
+
+    // Monotonicity (operation A): repeated writes increase the clock by exactly
+    // one each time and never decrease. A write is an event, so even re-writing
+    // the same value bumps.
+    #[tokio::test]
+    async fn test_clock_monotonic_on_repeated_writes() {
+        let mut tc = TestContext::new();
+        let decls = vec![Decl::VarDecl {
+            name: tc.x,
+            ty: None,
+            val: lit_int(0),
+        }];
+        tc.manager.create_service(tc.foo, decls).await.unwrap();
+
+        let key = (tc.foo, tc.x);
+        for expected in 1..=3u64 {
+            tc.manager.assign(tc.foo, tc.x, vint(7), None).await.unwrap();
+            let c = tc
+                .manager
+                .services
+                .get(&tc.foo)
+                .unwrap()
+                .vars
+                .get(&tc.x)
+                .unwrap()
+                .vector_clock
+                .get(&key)
+                .copied()
+                .unwrap_or(0);
+            assert_eq!(c, expected, "clock must increase by exactly 1 per write");
+        }
     }
 
     // Helper: service with a single var x = 0
