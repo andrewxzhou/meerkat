@@ -241,10 +241,9 @@ async fn run_and_reply_or_park(manager: &mut Manager, parked: ParkedRequest) {
                 .execute_action_participant(service, &stmts, &env, tid.clone())
                 .await
             {
-                Err(EvalError::WaitOn(svc, var)) => {
-                    manager.park_request(
-                        svc,
-                        var,
+                Err(EvalError::WaitOn(key)) => {
+                    manager.park_request_key(
+                        key,
                         ParkedRequest::Action {
                             request_id,
                             reply_to,
@@ -282,10 +281,9 @@ async fn run_and_reply_or_park(manager: &mut Manager, parked: ParkedRequest) {
                 .remote_read_participant(service, member, tid.clone())
                 .await
             {
-                Err(EvalError::WaitOn(svc, var)) => {
-                    manager.park_request(
-                        svc,
-                        var,
+                Err(EvalError::WaitOn(key)) => {
+                    manager.park_request_key(
+                        key,
                         ParkedRequest::Lookup {
                             request_id,
                             reply_to,
@@ -344,16 +342,7 @@ async fn run_and_reply_or_park(manager: &mut Manager, parked: ParkedRequest) {
                 // Defensive check: If lock acquisition is blocked
                 // again (e.g., by an older transaction), park the
                 // request in the queue to await future release.
-                // Distinguish service-level from member-level lock
-                // waits: `acquire_service_lock` returns `WaitOn(svc, svc)`
-                // when blocked on a service lock, while member lock
-                // contention returns `WaitOn(svc, member_var)`
-                Err(EvalError::WaitOn(svc, var)) => {
-                    let key = if svc == var {
-                        WaitKey::Service(manager.service_net_id_for_name(svc))
-                    } else {
-                        WaitKey::Member(manager.service_net_id_for_name(svc), var)
-                    };
+                Err(EvalError::WaitOn(key)) => {
                     manager.park_request_key(
                         key,
                         ParkedRequest::Lock {

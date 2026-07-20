@@ -1354,7 +1354,7 @@ impl Manager {
             Err(e) => {
                 // Wait-die wait: preserve the transaction so the parked read can
                 // resume on release; any other failure releases and drops it.
-                if matches!(e, EvalError::WaitOn(_, _)) {
+                if matches!(e, EvalError::WaitOn(_)) {
                     self.pending_txns.insert(tid, txn);
                     return Err(e);
                 }
@@ -1545,6 +1545,7 @@ impl Manager {
         var: Symbol,
         txn_id: &TxnId,
     ) -> Result<(), EvalError> {
+        let sid = self.service_net_id_for_name(service_name);
         let service = self.services.get_mut(&service_name).ok_or_else(|| {
             EvalError::ServiceNotFound(format!(
                 "Service '{}' not found",
@@ -1562,7 +1563,7 @@ impl Manager {
                         self.interner.get(service_name)
                     )));
                 } else {
-                    return Err(EvalError::WaitOn(service_name, service_name));
+                    return Err(EvalError::WaitOn(WaitKey::Service(sid.clone())));
                 }
             }
         }
@@ -1577,7 +1578,9 @@ impl Manager {
                     "transaction died contending for write lock on '{}'",
                     self.interner.get(var)
                 ))),
-                crate::runtime::txn::WaitDie::Wait => Err(EvalError::WaitOn(service_name, var)),
+                crate::runtime::txn::WaitDie::Wait => {
+                    Err(EvalError::WaitOn(WaitKey::Member(sid, var)))
+                }
             }
         }
     }
@@ -1606,6 +1609,7 @@ impl Manager {
         var: Symbol,
         txn_id: &TxnId,
     ) -> Result<(), EvalError> {
+        let sid = self.service_net_id_for_name(service_name);
         let service = self.services.get_mut(&service_name).ok_or_else(|| {
             EvalError::ServiceNotFound(format!(
                 "Service '{}' not found",
@@ -1623,7 +1627,7 @@ impl Manager {
                         self.interner.get(service_name)
                     )));
                 } else {
-                    return Err(EvalError::WaitOn(service_name, service_name));
+                    return Err(EvalError::WaitOn(WaitKey::Service(sid.clone())));
                 }
             }
         }
@@ -1638,7 +1642,9 @@ impl Manager {
                     "transaction died contending for read lock on '{}'",
                     self.interner.get(var)
                 ))),
-                crate::runtime::txn::WaitDie::Wait => Err(EvalError::WaitOn(service_name, var)),
+                crate::runtime::txn::WaitDie::Wait => {
+                    Err(EvalError::WaitOn(WaitKey::Member(sid, var)))
+                }
             }
         }
     }
@@ -1666,6 +1672,7 @@ impl Manager {
         var: Symbol,
         txn_id: &TxnId,
     ) -> Result<(), EvalError> {
+        let sid = self.service_net_id_for_name(service_name);
         let service = self.services.get_mut(&service_name).ok_or_else(|| {
             EvalError::ServiceNotFound(format!(
                 "Service '{}' not found",
@@ -1683,7 +1690,7 @@ impl Manager {
                         self.interner.get(service_name)
                     )));
                 } else {
-                    return Err(EvalError::WaitOn(service_name, service_name));
+                    return Err(EvalError::WaitOn(WaitKey::Service(sid.clone())));
                 }
             }
         }
@@ -1698,7 +1705,9 @@ impl Manager {
                     "transaction died contending to upgrade lock on '{}'",
                     self.interner.get(var)
                 ))),
-                crate::runtime::txn::WaitDie::Wait => Err(EvalError::WaitOn(service_name, var)),
+                crate::runtime::txn::WaitDie::Wait => {
+                    Err(EvalError::WaitOn(WaitKey::Member(sid, var)))
+                }
             }
         }
     }
@@ -1873,7 +1882,7 @@ impl Manager {
             }
         }
         if let Some(e) = exec_error {
-            if matches!(e, EvalError::WaitOn(_, _)) {
+            if matches!(e, EvalError::WaitOn(_)) {
                 self.pending_txns.insert(tid, txn);
                 return Err(e);
             }
@@ -1939,6 +1948,7 @@ impl Manager {
         service_name: Symbol,
         txn_id: &TxnId,
     ) -> Result<(), EvalError> {
+        let sid = self.service_net_id_for_name(service_name);
         let service = self.services.get_mut(&service_name).ok_or_else(|| {
             EvalError::ServiceNotFound(format!(
                 "Service '{}' not found",
@@ -1950,7 +1960,7 @@ impl Manager {
         // A service-level lock acts as an exclusive write lock on all
         // present and future members. If held by another transaction,
         // younger requesters abort immediately under wait-die, while
-        // older requesters yield `WaitOn(service, service)` to park
+        // older requesters yield `WaitOn(WaitKey::Service(...))` to park
         if let Some(holder) = &service.service_lock {
             if holder == txn_id {
                 return Ok(());
@@ -1962,7 +1972,7 @@ impl Manager {
                     self.interner.get(service_name)
                 )));
             } else {
-                return Err(EvalError::WaitOn(service_name, service_name));
+                return Err(EvalError::WaitOn(WaitKey::Service(sid.clone())));
             }
         }
 
@@ -1980,7 +1990,7 @@ impl Manager {
                         self.interner.get(service_name)
                     )));
                 } else {
-                    return Err(EvalError::WaitOn(service_name, *var_name));
+                    return Err(EvalError::WaitOn(WaitKey::Member(sid, *var_name)));
                 }
             }
         }
@@ -2034,7 +2044,7 @@ impl Manager {
             // so far and clear the transaction's lock tracking sets,
             // ensuring the transaction yields completely and retries
             // from scratch when unparked
-            Err(EvalError::WaitOn(svc, var)) => {
+            Err(EvalError::WaitOn(key)) => {
                 let freed = self.all_locked_keys(&txn);
                 self.release_locks(&freed, &txn.id);
                 txn.locked.clear();
@@ -2048,7 +2058,7 @@ impl Manager {
                 debug_assert!(txn.participants.is_empty());
 
                 self.pending_txns.insert(txn_id, txn);
-                Err(EvalError::WaitOn(svc, var))
+                Err(EvalError::WaitOn(key))
             }
             Err(e) => {
                 self.discard_failed_participant_txn(txn).await;
@@ -3155,7 +3165,7 @@ mod tests {
     async fn test_wait_die_older_takes_wait_path() {
         // Wait-die: an older transaction contending for a lock held by
         // a younger transaction takes the wait path, surfaced as
-        // `WaitOn` carrying the contended `(service, var)` so the owner
+        // `WaitOn` carrying the contended `WaitKey` so the owner
         // can park the request
         let mut tc = TestContext::new();
         tc.manager
@@ -3190,7 +3200,7 @@ mod tests {
             iteration: 0,
         };
         let result = tc.manager.acquire_write_lock(tc.s1, tc.x, &older);
-        assert!(matches!(result, Err(EvalError::WaitOn(_, _))));
+        assert!(matches!(result, Err(EvalError::WaitOn(_))));
     }
 
     #[tokio::test]
@@ -3320,7 +3330,7 @@ mod tests {
             .execute_action_participant(tc.s1, &stmts, &[], older.clone())
             .await;
         // Parked: returns `WaitOn`, and the partial transaction is preserved
-        assert!(matches!(result, Err(EvalError::WaitOn(_, _))));
+        assert!(matches!(result, Err(EvalError::WaitOn(_))));
         assert!(tc.manager.pending_txns.contains_key(&older));
         // The lock it already took on `y` is still held (not released on park)
         assert!(matches!(
@@ -3453,7 +3463,7 @@ mod tests {
             .manager
             .execute_action_participant(tc.s1, &stmts, &[], older.clone())
             .await;
-        assert!(matches!(r1, Err(EvalError::WaitOn(_, _))));
+        assert!(matches!(r1, Err(EvalError::WaitOn(_))));
         tc.manager.park_request(
             tc.s1,
             tc.x,
@@ -3800,7 +3810,7 @@ mod tests {
             .manager
             .handle_lock_request(older.clone(), services)
             .await;
-        assert!(matches!(res, Err(EvalError::WaitOn(_, _))));
+        assert!(matches!(res, Err(EvalError::WaitOn(_))));
 
         // Assert all-or-nothing: lock on `y` was released upon `WaitOn`
         let y_state = tc
