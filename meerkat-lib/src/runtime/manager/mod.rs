@@ -1360,8 +1360,7 @@ impl Manager {
                 }
                 // Could not acquire the read lock (e.g. conflict): release any
                 // locks taken and do not keep this transaction prepared.
-                let freed = self.all_locked_keys(&txn);
-                self.release_locks(&freed, &txn.id);
+                self.discard_failed_participant_txn(txn).await;
                 Err(e)
             }
         }
@@ -1878,8 +1877,7 @@ impl Manager {
                 self.pending_txns.insert(tid, txn);
                 return Err(e);
             }
-            let freed = self.all_locked_keys(&txn);
-            self.release_locks(&freed, &txn.id);
+            self.discard_failed_participant_txn(txn).await;
             return Err(e);
         }
         self.pending_txns.insert(tid, txn);
@@ -1907,16 +1905,29 @@ impl Manager {
         }
     }
 
+    /// Centralized cleanup for a participant transaction that encountered a terminal failure
+    ///
+    /// Releases local locks and aborts all sub-participants before dropping the transaction
+    ///
+    /// Args:
+    ///     txn (Transaction): The transaction context
+    ///
+    /// Returns:
+    ///     HashSet<WaitKey>: The set of freed wait keys
+    async fn discard_failed_participant_txn(&mut self, txn: Transaction) -> HashSet<WaitKey> {
+        let freed = self.all_locked_keys(&txn);
+        self.release_locks(&freed, &txn.id);
+        for addr in txn.participants {
+            self.send_abort(addr, &txn.id).await;
+        }
+        freed
+    }
+
     /// Participant side: discard and release a held transaction on `Abort`, and
     /// forward the abort down the chain to any sub-participants
     pub async fn abort_participant(&mut self, tid: &TxnId) -> HashSet<WaitKey> {
         if let Some(txn) = self.pending_txns.remove(tid) {
-            let freed = self.all_locked_keys(&txn);
-            self.release_locks(&freed, &txn.id);
-            for addr in txn.participants.iter().cloned().collect::<Vec<_>>() {
-                self.send_abort(addr, tid).await;
-            }
-            freed
+            self.discard_failed_participant_txn(txn).await
         } else {
             HashSet::new()
         }
@@ -2029,8 +2040,7 @@ impl Manager {
                 Err(EvalError::WaitOn(svc, var))
             }
             Err(e) => {
-                let freed = self.all_locked_keys(&txn);
-                self.release_locks(&freed, &txn.id);
+                self.discard_failed_participant_txn(txn).await;
                 Err(e)
             }
         }
