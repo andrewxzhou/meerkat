@@ -40,11 +40,15 @@ def run_mkn(name, manifest):
     print(f"test {name} ... ", end="", flush=True)
     res = subprocess.run(
         [sys.executable, "scripts/mkn.py", manifest],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
     )
     if res.returncode != 0:
         print("FAILED")
+        if res.stdout is not None and len(res.stdout) > 0:
+            print(res.stdout, end="")
+        if res.stderr is not None and len(res.stderr) > 0:
+            print(res.stderr, end="")
         return False
     print("ok")
     return True
