@@ -2087,18 +2087,11 @@ impl Manager {
         txn: &mut Transaction,
         services: &HashMap<String, LockGroup>,
     ) -> Result<(), EvalError> {
-        println!(
-            "[DEBUG] acquire_lock_group_internal starting for \
-             txn={:?}, services={:?}",
-            txn.id, services
-        );
-
         // 1. Process service-level locks first
         for (svc_name_str, group) in services {
             let svc_sym = self.interner.insert(svc_name_str);
             if group.service_level_lock {
                 let net_id = self.service_net_id_for_name(svc_sym);
-                println!("[DEBUG] Acquiring service lock on {}", svc_name_str);
                 self.acquire_service_lock(svc_sym, &txn.id)?;
                 txn.service_locked.insert(net_id);
             }
@@ -2130,36 +2123,19 @@ impl Manager {
                 // def expression is mutated by another transaction
                 // after we check its dependencies but before we lock it
                 let key = (self.service_net_id_for_name(svc_sym), mem_sym);
-                let svc_name = self.interner.get(svc_sym).to_string();
-                let mem_name = self.interner.get(mem_sym).to_string();
 
                 if !txn.locked.contains(&key) {
                     // Acquire a new lock since the variable is not
                     // yet locked by the current transaction
                     if is_write {
-                        println!(
-                            "[DEBUG] Acquiring local write lock \
-                             on {}.{}",
-                            svc_name, mem_name
-                        );
                         self.acquire_write_lock(svc_sym, mem_sym, &txn.id)?;
                     } else {
-                        println!(
-                            "[DEBUG] Acquiring local read lock \
-                             on {}.{}",
-                            svc_name, mem_name
-                        );
                         self.acquire_read_lock(svc_sym, mem_sym, &txn.id)?;
                     }
                     txn.locked.insert(key);
                 } else if is_write {
                     // Upgrade the existing read lock to a write lock
                     // if a write lock is requested
-                    println!(
-                        "[DEBUG] Upgrading local lock to write \
-                         on {}.{}",
-                        svc_name, mem_name
-                    );
                     self.upgrade_to_write_lock(svc_sym, mem_sym, &txn.id)?;
                 }
 
@@ -2227,7 +2203,6 @@ impl Manager {
             }
         }
 
-        println!("[DEBUG] Sending remote node requests: {:?}", node_requests);
         for (addr, remote_services) in node_requests {
             txn.participants.insert(addr.clone());
 
@@ -2242,10 +2217,6 @@ impl Manager {
                 reply_to: self.local_reply_addr().await,
             };
 
-            println!(
-                "[DEBUG] Awaiting lock response from {:?} for msg={:?}",
-                addr, msg
-            );
             let reply = self
                 .send_and_await_reply(
                     addr.clone(),
@@ -2254,10 +2225,6 @@ impl Manager {
                     format!("Timeout waiting for lock response from {:?}", addr),
                 )
                 .await?;
-            println!(
-                "[DEBUG] Received reply for remote lock from {:?}: {:?}",
-                addr, reply
-            );
 
             match reply {
                 MeerkatMessage::LockResponse { success, error, .. } => {
@@ -2275,10 +2242,6 @@ impl Manager {
             }
         }
 
-        println!(
-            "[DEBUG] acquire_lock_group_internal complete for txn={:?}",
-            txn.id
-        );
         Ok(())
     }
 
