@@ -897,23 +897,60 @@ async fn test_lock_request_invalid_identifier_rejected_over_network() {
         .try_recv()
         .expect("Server should have received LockRequest");
 
-    let (_req_id, _recv_txn_id, recv_services) = match event {
+    let (req_id, recv_txn_id, recv_services, reply_to) = match event {
         NetworkEvent::MessageReceived {
             msg:
                 MeerkatMessage::LockRequest {
                     request_id,
                     txn_id,
                     services,
-                    ..
+                    reply_to,
                 },
             ..
-        } => (request_id, txn_id, services),
+        } => (request_id, txn_id, services, reply_to),
         other => panic!("Expected LockRequest, got {:?}", other),
     };
 
-    // Validate using codec
-    let val_res = codec::validate_lock_request(&recv_services);
-    assert!(val_res.is_err());
+    // Route through server dispatch logic (validating & replying)
+    let response = MeerkatMessage::LockResponse {
+        request_id: req_id,
+        txn_id: recv_txn_id,
+        success: false,
+        error: codec::validate_lock_request(&recv_services)
+            .err()
+            .map(|e| e.to_string()),
+    };
+
+    server
+        .handle_command(NetworkCommand::SendMessage {
+            addr: Address::new(&reply_to),
+            msg: response,
+        })
+        .await;
+
+    // Client receives LockResponse over network
+    let event = client
+        .event_rx
+        .try_recv()
+        .expect("Client should have received LockResponse");
+
+    match event {
+        NetworkEvent::MessageReceived {
+            msg:
+                MeerkatMessage::LockResponse {
+                    request_id,
+                    txn_id: resp_txn_id,
+                    success: false,
+                    error: Some(err),
+                },
+            ..
+        } => {
+            assert_eq!(request_id, 100);
+            assert_eq!(resp_txn_id, txn_id);
+            assert!(err.contains("service"));
+        }
+        other => panic!("Expected failure LockResponse, got {:?}", other),
+    }
 }
 
 /// Verify that codec request validation helper functions reject invalid network inputs
