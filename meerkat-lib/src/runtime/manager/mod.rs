@@ -13,6 +13,14 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tokio::sync::oneshot;
 
+/// One cross-service dependency's cached state: the last value delivered for it
+/// plus the vector clock that value was stamped with by its writer.
+pub type DepEntry = (Value, VClock);
+
+/// #24: cached values of each def's cross-service deps:
+/// def -> {(source service, member) -> (value, clock)}.
+pub type DepCache = HashMap<Symbol, HashMap<(Symbol, Symbol), DepEntry>>;
+
 pub struct Service {
     /// Globally unique identity of this service (address-based when networked).
     pub id: ServiceNetId,
@@ -24,8 +32,8 @@ pub struct Service {
     /// #24: who depends on each member: member -> {(listener service id, def)}.
     pub listeners: HashMap<Symbol, HashSet<(ServiceNetId, Symbol)>>,
     /// #24: cached values of each def's cross-service deps:
-    /// def -> {(source service, member) -> value}.
-    pub dep_cache: HashMap<Symbol, HashMap<(Symbol, Symbol), (Value, VClock)>>,
+    /// def -> {(source service, member) -> (value, clock)}.
+    pub dep_cache: DepCache,
     /// Optional lock for whole-service blocking during structural updates
     pub service_lock: Option<TxnId>,
 }
@@ -588,7 +596,7 @@ impl Manager {
         // get all the vclocks first
         for (svc, var) in read_set.union(write_set) {
             match self.get_clock(svc, var) {
-                Some(clock) => vclocks.push(&clock),
+                Some(clock) => vclocks.push(clock),
                 None => {
                     log::warn!(
                         "simultaneous_bump: clock for var {} in service {} not found",
@@ -665,7 +673,7 @@ impl Manager {
         let mut vclocks: Vec<&VClock> = Vec::new();
 
         // local inputs
-        match curr_svc.dep.dep_graph.get(&def) {
+        match curr_svc.dep.dep_graph.get(def) {
             Some(local_deps) => {
                 for name in local_deps {
                     match curr_svc.vars.get(name) {
@@ -686,7 +694,7 @@ impl Manager {
         }
 
         // cross-service inputs
-        if let Some(deps) = curr_svc.dep_cache.get(&def) {
+        if let Some(deps) = curr_svc.dep_cache.get(def) {
             for (_, clk) in deps.values() {
                 vclocks.push(clk);
             }
@@ -712,7 +720,7 @@ impl Manager {
     /// cache with this def's cached cross-service deps so MemberAccess resolves
     /// from cache instead of a (possibly remote) lookup. Returns whether the
     /// stored value changed.
-
+    ///
     /// Vector clock PR update: to make sure that recomputing defs is safe
     /// we add a check against the vector clocks of the dependencies of the def.
     /// specifically, we check that for all dependent variables v that def depends on,
@@ -812,7 +820,7 @@ impl Manager {
                 }
             }
         } else {
-            return false;
+            false
         }
     }
 
@@ -3338,24 +3346,29 @@ mod tests {
     // (as the dispatcher does) and hand it to `dst.handle_update`. The symbols
     // are re-derived from strings on the far side, so `src` and `dst` need not
     // share a symbol space.
+    // The payload of one such update, entirely in `src`'s symbol space.
+    struct WireUpdate {
+        listener_def: Symbol,
+        source: Symbol,
+        member: Symbol,
+        value: Value,
+        clock: VClock,
+    }
+
     async fn send_update_over_wire(
         src: &Manager,
         dst: &mut Manager,
         listener_net_id: &str,
-        listener_def: Symbol, // in src's symbol space
-        source: Symbol,       // in src's symbol space
-        member: Symbol,       // in src's symbol space
-        value: Value,
-        clock: VClock, // in src's symbol space
+        update: WireUpdate,
     ) {
         // send side (mirrors emit_update)
         let msg = MeerkatMessage::Update {
             listener_service: listener_net_id.to_string(),
-            listener_def: src.interner.get(listener_def).to_string(),
-            source_service: src.interner.get(source).to_string(),
-            member: src.interner.get(member).to_string(),
-            value: codec::encode_value(&value, &src.interner).unwrap(),
-            clock: codec::encode_clock(&clock, &src.interner),
+            listener_def: src.interner.get(update.listener_def).to_string(),
+            source_service: src.interner.get(update.source).to_string(),
+            member: src.interner.get(update.member).to_string(),
+            value: codec::encode_value(&update.value, &src.interner).unwrap(),
+            clock: codec::encode_clock(&update.clock, &src.interner),
         };
 
         // real transport: the exact serde_json framing recv_message uses
@@ -3489,22 +3502,26 @@ mod tests {
             &node_a,
             &mut node_b,
             &b_s2_id,
-            a_z,
-            a_s1,
-            a_a,
-            vint(11),
-            HashMap::from([((a_s1, a_w), 1u64), ((a_s1, a_a), 1u64)]),
+            WireUpdate {
+                listener_def: a_z,
+                source: a_s1,
+                member: a_a,
+                value: vint(11),
+                clock: HashMap::from([((a_s1, a_w), 1u64), ((a_s1, a_a), 1u64)]),
+            },
         )
         .await;
         send_update_over_wire(
             &node_a,
             &mut node_b,
             &b_s2_id,
-            a_z,
-            a_s1,
-            a_b,
-            vint(21),
-            HashMap::from([((a_s1, a_w), 1u64), ((a_s1, a_b), 1u64)]),
+            WireUpdate {
+                listener_def: a_z,
+                source: a_s1,
+                member: a_b,
+                value: vint(21),
+                clock: HashMap::from([((a_s1, a_w), 1u64), ((a_s1, a_b), 1u64)]),
+            },
         )
         .await;
 

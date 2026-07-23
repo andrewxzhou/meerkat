@@ -593,7 +593,7 @@ pub fn encode_value(val: &Value, interner: &Interner) -> Result<NetValue> {
 ///     ((String, String), u64) pairs. Note that this is the direct mechanical
 ///     translation of the key-value mappings in a vector clock.
 pub fn encode_clock(clock: &VClock, interner: &Interner) -> Vec<ClockEntry> {
-    let clock_vec = clock.into_iter();
+    let clock_vec = clock.iter();
     clock_vec
         .map(|((svc_sym, var_sym), i)| ClockEntry {
             service: interner.get(*svc_sym).to_string(),
