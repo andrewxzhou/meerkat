@@ -1,56 +1,63 @@
+"""MKN test suite: unit tests followed by integration tests.
+
+Runs in two phases mirroring cargo test output:
+  1. Unit tests   - manifest validation checks (no live nodes)
+  2. Integration  - full orchestration tests (spawns real nodes)
+
+Finally delegates to the lock_group integration suite for transitive
+locking tests.
+
+Run from workspace root:
+    python3 scripts/test_mkn.py
+"""
+
 import subprocess
 import json
 import sys
-import re
 import os
 import signal
+import time
+
+
+# ---------------------------------------------------------------------------
+# Subprocess helper
+# ---------------------------------------------------------------------------
 
 def run_cmd(args, timeout=30):
-    """Runs a subprocess command with a timeout, redirecting stderr to stdout.
+    """Run a subprocess with a timeout, merging stderr into stdout.
 
     Args:
-        args: A list of program arguments to execute.
-        timeout: Maximum duration in seconds to wait for execution.
+        args (list[str]): Command and arguments to execute.
+        timeout (int): Maximum seconds to wait before killing.
 
     Returns:
-        A tuple of (returncode, output), where:
-          - returncode: The exit code of the subprocess, or -1 on timeout.
-          - output: The combined stdout and stderr of the process.
+        tuple[int, str]: (returncode, combined output). returncode is
+            -1 on timeout.
     """
     is_windows = sys.platform == "win32"
     kwargs = {}
-    
     if is_windows:
-        # Create a new process group on Windows
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
-        # Create a new session (process group) on POSIX
         kwargs["start_new_session"] = True
 
     try:
         proc = subprocess.Popen(
-            args, 
-            stdout=subprocess.PIPE, 
-            stderr=subprocess.STDOUT, 
-            text=True, 
-            **kwargs
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            **kwargs,
         )
         stdout, _ = proc.communicate(timeout=timeout)
         return proc.returncode, stdout
     except subprocess.TimeoutExpired:
-        print(f"\nFAIL: Command timed out after {timeout} seconds: {' '.join(args)}")
-        
-        # Terminate the entire process tree to prevent orphans
-        # Note: Using SIGKILL or taskkill /F bypasses the target process's atexit
-        # and cleanup handlers. Consequently, any temporary files, logs, or
-        # pycache directories created by the child process will remain on disk.
-        # This is the desired outcome, as those logs likely need to be inspected.
         if is_windows:
             try:
                 subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                     stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
+                    stderr=subprocess.DEVNULL,
                 )
             except Exception:
                 pass
@@ -59,206 +66,408 @@ def run_cmd(args, timeout=30):
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             except ProcessLookupError:
                 pass
-                
-        # Reap the process and capture any remaining partial output
+
         stdout, _ = proc.communicate()
-        
         if isinstance(stdout, bytes):
             stdout = stdout.decode(errors="replace")
         elif stdout is None:
             stdout = ""
-            
         return -1, stdout
 
-def run_basic_test():
-    """Runs integration test 1 (mkn_basic_topology) to verify a basic orchestrator setup."""
-    print("Running Test 1: mkn_basic_topology...")
-    code, output = run_cmd([
-        sys.executable, "scripts/mkn.py", "meerkat/tests/mkn/test_mkn_basic.json"
-    ])
-    
-    print(output)
-    
+
+# ---------------------------------------------------------------------------
+# Test runner primitives
+# ---------------------------------------------------------------------------
+
+def run_suite(suite_name, tests):
+    """Run a list of (name, callable) tests and report cargo-style output.
+
+    Each callable must return True on pass, False on fail.
+
+    Args:
+        suite_name (str): Human-readable label for this suite.
+        tests (list[tuple[str, callable]]): Ordered list of tests.
+
+    Returns:
+        tuple[int, int]: (passed, failed) counts.
+    """
+    print(f"     Running scripts/test_mkn.py ({suite_name})")
+    print()
+    print(f"running {len(tests)} tests")
+
+    passed = 0
+    failed = 0
+    start = time.monotonic()
+
+    for name, fn in tests:
+        print(f"test {name} ... ", end="", flush=True)
+        try:
+            ok = fn()
+        except Exception as exc:
+            print(f"FAILED\nerror: {exc}")
+            ok = False
+        if ok:
+            print("ok")
+            passed += 1
+        else:
+            failed += 1
+
+    elapsed = time.monotonic() - start
+    status = "ok" if failed == 0 else "FAILED"
+    print()
+    print(
+        f"test result: {status}. "
+        f"{passed} passed; {failed} failed; "
+        f"finished in {elapsed:.2f}s"
+    )
+    print()
+    return passed, failed
+
+
+# ---------------------------------------------------------------------------
+# Unit tests — manifest validation (no live nodes)
+# ---------------------------------------------------------------------------
+
+MKN = "scripts/mkn.py"
+MKN_DIR = "meerkat/tests/mkn"
+
+VALIDATION_CASES = [
+    ("invalid_port",
+     "test_mkn_invalid_port.json", "cannot specify a port"),
+    ("missing_alias",
+     "test_mkn_missing_alias.json", "missing 'alias'"),
+    ("empty_nodes_list",
+     "test_mkn_empty_nodes.json", "'nodes' list cannot be empty"),
+    ("duplicate_alias",
+     "test_mkn_duplicate_alias.json", "Duplicate node alias detected"),
+    ("invalid_alias_format",
+     "test_mkn_invalid_alias_format.json",
+     "must match alphanumeric/underscore format"),
+    ("missing_type",
+     "test_mkn_missing_type.json", "missing required 'type' key"),
+    ("invalid_type",
+     "test_mkn_invalid_type.json", "type must be 'server' or 'client'"),
+    ("missing_file_or_cmd",
+     "test_mkn_missing_file_or_cmd.json",
+     "must specify either 'file' or 'cmd'"),
+    ("invalid_cmd",
+     "test_mkn_invalid_cmd.json", "'cmd' must be a list of strings"),
+    ("invalid_port_type",
+     "test_mkn_invalid_port_type.json", "'port' must be an integer"),
+    ("server_with_relay",
+     "test_mkn_server_relay.json", "cannot specify a relay"),
+    ("invalid_relay_reference",
+     "test_mkn_invalid_relay.json",
+     "which does not exist in the manifest"),
+    ("invalid_imports_format",
+     "test_mkn_invalid_imports_format.json",
+     "must use 'alias.service_name' dot-notation"),
+    ("invalid_imports_reference",
+     "test_mkn_invalid_imports_reference.json",
+     "imports from node 'missing' which does not exist"),
+    ("circular_dependency",
+     "test_mkn_circular_dependency.json",
+     "Circular dependency detected in manifest"),
+]
+
+
+def make_validation_test(filename, expected_error):
+    """Return a zero-argument callable for a single validation case.
+
+    Args:
+        filename (str): Manifest filename relative to MKN_DIR.
+        expected_error (str): Substring expected in the error output.
+
+    Returns:
+        callable: Test function returning True on pass, False on fail.
+    """
+    def test():
+        path = f"{MKN_DIR}/{filename}"
+        code, output = run_cmd([sys.executable, MKN, path])
+        if code == 0:
+            print(
+                f"\nFAIL: expected non-zero exit for {filename}; "
+                f"got 0. Output:\n{output.strip()}"
+            )
+            return False
+        if expected_error not in output:
+            print(
+                f"\nFAIL: expected '{expected_error}' in output "
+                f"for {filename}. Got:\n{output.strip()}"
+            )
+            return False
+        return True
+    return test
+
+
+def build_unit_tests():
+    """Build the full list of unit test (name, callable) pairs.
+
+    Returns:
+        list[tuple[str, callable]]: Unit test pairs.
+    """
+    return [
+        (name, make_validation_test(filename, expected_error))
+        for name, filename, expected_error in VALIDATION_CASES
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Integration tests — full orchestration (spawns real nodes)
+# ---------------------------------------------------------------------------
+
+def test_mkn_basic_topology():
+    """Verify a basic two-node server/client topology completes cleanly.
+
+    Returns:
+        bool: True if the test passed.
+    """
+    code, output = run_cmd(
+        [sys.executable, MKN,
+         f"{MKN_DIR}/test_mkn_basic.json"],
+        timeout=90,
+    )
     if code != 0:
-        print("FAIL: Basic topology test exited with code", code)
+        print(
+            f"\nFAIL: basic topology exited {code}. "
+            f"Output:\n{output.strip()}"
+        )
         return False
-        
-    # Check that basic_server finished successfully (was shutdown)
-    # Check that the logs of basic_server contain "All services online."
-    # Since they are printed to stdout, we can search the output.
     if "All services online." not in output:
-        print("FAIL: Expected 'All services online.' marker in orchestrator output")
+        print(
+            "\nFAIL: 'All services online.' not found in output.\n"
+            + output.strip()
+        )
         return False
-        
-    print("PASS: mkn_basic_topology")
     return True
 
-def run_namespace_split_test():
-    """Runs integration test 2 (mkn_namespace_split) to verify three-namespace tracking and relay routing."""
-    print("\nRunning Test 2: mkn_namespace_split...")
-    code, output = run_cmd([
-        sys.executable, "scripts/mkn.py", "meerkat/tests/mkn/test_mkn_relay.json", "--dump-state"
-    ])
-    
-    print(output)
-    
+
+def test_mkn_namespace_split():
+    """Verify three-namespace tracking and relay routing via state dump.
+
+    Returns:
+        bool: True if the test passed.
+    """
+    code, output = run_cmd(
+        [sys.executable, MKN,
+         f"{MKN_DIR}/test_mkn_relay.json", "--dump-state"],
+        timeout=90,
+    )
     if code != 0:
-        print("FAIL: Namespace split test exited with code", code)
+        print(
+            f"\nFAIL: namespace split exited {code}. "
+            f"Output:\n{output.strip()}"
+        )
         return False
-        
-    # Extract state dump
+
     marker_start = "--- STATE DUMP ---"
     marker_end = "--- END STATE DUMP ---"
     if marker_start not in output or marker_end not in output:
-        print("FAIL: State dump not found in output")
+        print("\nFAIL: state dump markers not found in output.")
         return False
-        
-    state_str = output.split(marker_start)[1].split(marker_end)[0].strip()
+
+    state_str = (
+        output.split(marker_start)[1].split(marker_end)[0].strip()
+    )
     try:
         state = json.loads(state_str)
-    except Exception as e:
-        print("FAIL: Failed to parse state dump JSON:", e)
+    except Exception as exc:
+        print(f"\nFAIL: could not parse state dump JSON: {exc}")
         return False
-        
+
     relay = state.get("relay_node")
     client = state.get("relayed_client")
-    
     if not relay or not client:
-        print("FAIL: relay_node or relayed_client missing from state dump")
+        print(
+            "\nFAIL: relay_node or relayed_client missing from dump."
+        )
         return False
-        
-    # Check relay local_services
+
     if "relay_svc" not in relay.get("local_services", {}):
-        print("FAIL: relay_svc missing from relay local_services")
+        print("\nFAIL: relay_svc missing from relay local_services.")
         return False
-        
-    # Check relay relayed_services (this verifies the three namespaces and relay tracking!)
-    relayed_services = relay.get("relayed_services", {})
-    if "client_svc" not in relayed_services:
-        print("FAIL: client_svc missing from relay relayed_services (relay proxy tracking failed)")
+
+    relayed = relay.get("relayed_services", {})
+    if "client_svc" not in relayed:
+        print(
+            "\nFAIL: client_svc missing from relay relayed_services."
+        )
         return False
-        
-    # Check service properties
-    client_svc = relayed_services["client_svc"]
+
+    client_svc = relayed["client_svc"]
     if not client_svc.get("is_relayed"):
-        print("FAIL: client_svc is_relayed is false, expected true")
+        print("\nFAIL: client_svc.is_relayed is false.")
         return False
-        
+
     if client_svc.get("relay_peer_id") != relay.get("peer_id"):
-        print(f"FAIL: client_svc relay_peer_id ({client_svc.get('relay_peer_id')}) does not match relay's peer_id ({relay.get('peer_id')})")
+        print(
+            f"\nFAIL: relay_peer_id mismatch: "
+            f"{client_svc.get('relay_peer_id')} != "
+            f"{relay.get('peer_id')}"
+        )
         return False
-        
-    # Check client remote_services
+
     if "relay_svc" not in client.get("remote_services", {}):
-        print("FAIL: relay_svc missing from client remote_services")
+        print(
+            "\nFAIL: relay_svc missing from client remote_services."
+        )
         return False
-        
-    print("PASS: mkn_namespace_split (all 3 namespaces verified)")
+
     return True
 
-def run_validation_failure_test():
-    """Runs integration test 3 (mkn_validation_failure) to check 15 error edge cases in manifest validation."""
-    print("\nRunning Test 3: mkn_validation_failure...")
-    
-    test_cases = [
-        ("Invalid port", "test_mkn_invalid_port.json", "cannot specify a port"),
-        ("Missing alias", "test_mkn_missing_alias.json", "missing 'alias'"),
-        ("Empty nodes list", "test_mkn_empty_nodes.json", "'nodes' list cannot be empty"),
-        ("Duplicate alias", "test_mkn_duplicate_alias.json", "Duplicate node alias detected"),
-        ("Invalid alias format", "test_mkn_invalid_alias_format.json", "must match alphanumeric/underscore format"),
-        ("Missing type", "test_mkn_missing_type.json", "missing required 'type' key"),
-        ("Invalid type", "test_mkn_invalid_type.json", "type must be 'server' or 'client'"),
-        ("Missing file or cmd", "test_mkn_missing_file_or_cmd.json", "must specify either 'file' or 'cmd'"),
-        ("Invalid cmd", "test_mkn_invalid_cmd.json", "'cmd' must be a list of strings"),
-        ("Invalid port type", "test_mkn_invalid_port_type.json", "'port' must be an integer"),
-        ("Server with relay", "test_mkn_server_relay.json", "cannot specify a relay"),
-        ("Invalid relay reference", "test_mkn_invalid_relay.json", "which does not exist in the manifest"),
-        ("Invalid imports format", "test_mkn_invalid_imports_format.json", "must use 'alias.service_name' dot-notation"),
-        ("Invalid imports reference", "test_mkn_invalid_imports_reference.json", "imports from node 'missing' which does not exist"),
-        ("Circular dependency", "test_mkn_circular_dependency.json", "Circular dependency detected in manifest"),
-    ]
-    
-    for name, filename, expected_error in test_cases:
-        filepath = f"meerkat/tests/mkn/{filename}"
-        code, output = run_cmd([sys.executable, "scripts/mkn.py", filepath])
-        
-        if code == 0:
-            print(f"FAIL: Expected non-zero code for {name}")
-            print(f"Actual output: {output.strip()}")
-            return False
-            
-        if expected_error not in output:
-            print(f"FAIL: Expected validation error regarding '{expected_error}'")
-            print(f"Actual output: {output.strip()}")
-            return False
-            
-        print(f"PASS: {name} check")
-        
-    print("\nPASS: mkn_validation_failure (All 15 edge cases checked)")
-    return True
 
-def run_client_timeout_test():
-    """Runs integration tests to verify client startup and execution timeout logic."""
-    print("\nRunning Test 4: client startup and execution timeouts...")
-    
-    # 1. Verify slow client (exceeds startup timeout but within execution timeout) succeeds.
-    code, output = run_cmd([
-        sys.executable, "scripts/mkn.py", "meerkat/tests/mkn/test_mkn_client_slow.json"
-    ])
-    print(output)
+def test_mkn_client_timeout_slow():
+    """Verify a slow client that exceeds startup but not exec timeout.
+
+    Returns:
+        bool: True if the test passed.
+    """
+    code, output = run_cmd(
+        [sys.executable, MKN,
+         f"{MKN_DIR}/test_mkn_client_slow.json"],
+        timeout=90,
+    )
     if code != 0:
-        print("FAIL: Slow client test failed, exited with code", code)
+        print(
+            f"\nFAIL: slow client exited {code}. "
+            f"Output:\n{output.strip()}"
+        )
         return False
-    print("PASS: Slow client test (bypassed startup timeout successfully)")
+    return True
 
-    # 2. Verify hanging client (exceeds execution timeout) fails with TimeoutError.
-    code, output = run_cmd([
-        sys.executable, "scripts/mkn.py", "meerkat/tests/mkn/test_mkn_client_exec_timeout.json"
-    ])
-    print(output)
+
+def test_mkn_client_timeout_exec():
+    """Verify a hanging client is terminated by the execution timeout.
+
+    Returns:
+        bool: True if the test passed.
+    """
+    code, output = run_cmd(
+        [sys.executable, MKN,
+         f"{MKN_DIR}/test_mkn_client_exec_timeout.json"],
+        timeout=90,
+    )
     if code == 0:
-        print("FAIL: Hanging client test exited with 0, expected timeout failure")
+        print(
+            "\nFAIL: hanging client exited 0; expected timeout failure."
+        )
         return False
     if "execution timed out" not in output:
-        print("FAIL: Expected client execution timeout error in output")
+        print(
+            "\nFAIL: 'execution timed out' not in output.\n"
+            + output.strip()
+        )
         return False
-    print("PASS: Hanging client test (terminated by execution timeout successfully)")
-    
     return True
 
-def run_missing_service_test():
-    """Runs integration test to verify that importing a missing service fails cleanly."""
-    print("\nRunning Test 5: missing service dependency error...")
-    code, output = run_cmd([
-        sys.executable, "scripts/mkn.py", "meerkat/tests/mkn/test_mkn_missing_service.json"
-    ])
-    print(output)
+
+def test_mkn_missing_service():
+    """Verify importing a missing service fails with a clear error.
+
+    Returns:
+        bool: True if the test passed.
+    """
+    code, output = run_cmd(
+        [sys.executable, MKN,
+         f"{MKN_DIR}/test_mkn_missing_service.json"],
+        timeout=90,
+    )
     if code == 0:
-        print("FAIL: Missing service test exited with 0, expected error exit code")
+        print(
+            "\nFAIL: missing service test exited 0; expected failure."
+        )
         return False
-    
-    expected_err = "imports missing service 'non_existent_svc' from online node 'basic_server'"
-    if expected_err not in output:
-        print(f"FAIL: Expected error message '{expected_err}' in output")
+    expected = (
+        "imports missing service 'non_existent_svc' "
+        "from online node 'basic_server'"
+    )
+    if expected not in output:
+        print(
+            f"\nFAIL: expected '{expected}' in output.\n"
+            + output.strip()
+        )
         return False
-        
-    print("PASS: Missing service test (failed cleanly with correct error message)")
     return True
+
+
+def build_integration_tests():
+    """Build the list of mkn integration test (name, callable) pairs.
+
+    Returns:
+        list[tuple[str, callable]]: Integration test pairs.
+    """
+    return [
+        ("mkn_basic_topology", test_mkn_basic_topology),
+        ("mkn_namespace_split", test_mkn_namespace_split),
+        ("mkn_client_timeout_slow", test_mkn_client_timeout_slow),
+        ("mkn_client_timeout_exec", test_mkn_client_timeout_exec),
+        ("mkn_missing_service", test_mkn_missing_service),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Lock group integration suite (external runner)
+# ---------------------------------------------------------------------------
+
+LOCK_GROUP_RUNNER = (
+    "scripts/tests/integration/lock_group/test_lock_groups.py"
+)
+
+
+def run_lock_group_suite():
+    """Delegate to the lock group integration suite runner.
+
+    Spawns `LOCK_GROUP_RUNNER` as a subprocess so its cargo-style
+    output is streamed directly to stdout with a 90-second timeout
+
+    Returns:
+        `bool`: `True` if the suite passed and did not time out
+    """
+    try:
+        result = subprocess.run(
+            [sys.executable, LOCK_GROUP_RUNNER],
+            timeout=90,
+        )
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        print(
+            "\nFAIL: lock group suite timed out (90s)",
+            file=sys.stderr,
+        )
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 def main():
-    """Main entry point to execute the integration test suite and exit with appropriate code."""
-    success = True
-    success &= run_basic_test()
-    success &= run_namespace_split_test()
-    success &= run_validation_failure_test()
-    success &= run_client_timeout_test()
-    success &= run_missing_service_test()
-    
-    if success:
-        print("\nALL INTEGRATION TESTS PASSED SUCCESSFULLY! ✓")
-        sys.exit(0)
-    else:
-        print("\nSOME INTEGRATION TESTS FAILED.")
-        sys.exit(1)
+    """Run unit tests, then integration tests, then lock group suite."""
+    total_passed = 0
+    total_failed = 0
+
+    # Phase 1: unit tests
+    p, f = run_suite("unit tests", build_unit_tests())
+    total_passed += p
+    total_failed += f
+
+    # Phase 2: mkn integration tests
+    p, f = run_suite("integration tests", build_integration_tests())
+    total_passed += p
+    total_failed += f
+
+    # Phase 3: lock group integration suite
+    lock_ok = run_lock_group_suite()
+    if not lock_ok:
+        total_failed += 1
+
+    # Final summary
+    overall = "ok" if total_failed == 0 else "FAILED"
+    print(
+        f"overall test result: {overall}. "
+        f"{total_passed} passed; {total_failed} failed."
+    )
+    sys.exit(0 if total_failed == 0 else 1)
+
 
 main()

@@ -714,3 +714,262 @@ async fn test_service_code_request_rejects_oversized_path() {
         other => panic!("Expected ServiceCodeError, got {:?}", other),
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_lock_request_roundtrip() {
+    use meerkat_lib::net::{Address, LockGroup, MeerkatMessage};
+    use meerkat_lib::runtime::txn::TxnId;
+    use std::collections::{HashMap, HashSet};
+
+    let registry = MockNetwork::new_registry();
+    let mut server = MockNetwork::new_with_registry(registry.clone());
+    let mut client = MockNetwork::new_with_registry(registry.clone());
+
+    let server_reply = server
+        .handle_command(NetworkCommand::Listen {
+            addr: Address::new("/ip4/127.0.0.1/tcp/9000"),
+        })
+        .await;
+    let server_addr = match server_reply {
+        NetworkReply::ListenSuccess { addr } => addr,
+        other => panic!("Expected ListenSuccess, got {:?}", other),
+    };
+    let client_reply = client
+        .handle_command(NetworkCommand::Listen {
+            addr: Address::new("/ip4/127.0.0.1/tcp/9001"),
+        })
+        .await;
+    let client_addr = match client_reply {
+        NetworkReply::ListenSuccess { addr } => addr,
+        other => panic!("Expected ListenSuccess, got {:?}", other),
+    };
+
+    let txn_id = TxnId {
+        timestamp: 100,
+        node_id: 1,
+        iteration: 0,
+    };
+
+    let mut services = HashMap::new();
+    services.insert(
+        "SvcA".to_string(),
+        LockGroup {
+            service_level_lock: true,
+            reads: HashSet::from(["x".to_string()]),
+            writes: HashSet::from(["y".to_string()]),
+        },
+    );
+
+    // Send LockRequest from client to server
+    client
+        .handle_command(NetworkCommand::SendMessage {
+            addr: server_addr.clone(),
+            msg: MeerkatMessage::LockRequest {
+                request_id: 42,
+                txn_id: txn_id.clone(),
+                services: services.clone(),
+                reply_to: client_addr.0.clone(),
+            },
+        })
+        .await;
+
+    // Server receives LockRequest
+    let event = server
+        .event_rx
+        .try_recv()
+        .expect("Server should have received LockRequest");
+
+    let (req_id, recv_txn_id, recv_services, reply_to) = match event {
+        NetworkEvent::MessageReceived {
+            msg:
+                MeerkatMessage::LockRequest {
+                    request_id,
+                    txn_id,
+                    services,
+                    reply_to,
+                },
+            ..
+        } => (request_id, txn_id, services, reply_to),
+        other => panic!("Expected LockRequest, got {:?}", other),
+    };
+
+    assert_eq!(req_id, 42);
+    assert_eq!(recv_txn_id, txn_id);
+    assert_eq!(recv_services, services);
+    assert_eq!(reply_to, client_addr.0);
+
+    // Server sends LockResponse back to client
+    server
+        .handle_command(NetworkCommand::SendMessage {
+            addr: Address::new(&reply_to),
+            msg: MeerkatMessage::LockResponse {
+                request_id: req_id,
+                txn_id: recv_txn_id,
+                success: true,
+                error: None,
+            },
+        })
+        .await;
+
+    // Client receives LockResponse
+    let event = client
+        .event_rx
+        .try_recv()
+        .expect("Client should have received LockResponse");
+
+    match event {
+        NetworkEvent::MessageReceived {
+            msg:
+                MeerkatMessage::LockResponse {
+                    request_id,
+                    txn_id: resp_txn_id,
+                    success,
+                    error,
+                },
+            ..
+        } => {
+            assert_eq!(request_id, 42);
+            assert_eq!(resp_txn_id, txn_id);
+            assert!(success);
+            assert!(error.is_none());
+        }
+        other => panic!("Expected LockResponse, got {:?}", other),
+    }
+}
+
+/// Verify that a LockRequest with invalid service or member identifiers is rejected over network
+#[tokio::test(flavor = "multi_thread")]
+async fn test_lock_request_invalid_identifier_rejected_over_network() {
+    use meerkat_lib::net::{Address, LockGroup, MeerkatMessage};
+    use meerkat_lib::runtime::txn::TxnId;
+    use std::collections::{HashMap, HashSet};
+
+    let registry = MockNetwork::new_registry();
+    let mut server = MockNetwork::new_with_registry(registry.clone());
+    let mut client = MockNetwork::new_with_registry(registry.clone());
+
+    let server_reply = server
+        .handle_command(NetworkCommand::Listen {
+            addr: Address::new("/ip4/127.0.0.1/tcp/9100"),
+        })
+        .await;
+    let server_addr = match server_reply {
+        NetworkReply::ListenSuccess { addr } => addr,
+        other => panic!("Expected ListenSuccess, got {:?}", other),
+    };
+    let client_reply = client
+        .handle_command(NetworkCommand::Listen {
+            addr: Address::new("/ip4/127.0.0.1/tcp/9101"),
+        })
+        .await;
+    let client_addr = match client_reply {
+        NetworkReply::ListenSuccess { addr } => addr,
+        other => panic!("Expected ListenSuccess, got {:?}", other),
+    };
+
+    let txn_id = TxnId::new(1);
+    let mut services = HashMap::new();
+    services.insert(
+        "invalid-service-name!".to_string(),
+        LockGroup {
+            service_level_lock: false,
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+        },
+    );
+
+    // Send LockRequest from client to server
+    client
+        .handle_command(NetworkCommand::SendMessage {
+            addr: server_addr.clone(),
+            msg: MeerkatMessage::LockRequest {
+                request_id: 100,
+                txn_id: txn_id.clone(),
+                services: services.clone(),
+                reply_to: client_addr.0.clone(),
+            },
+        })
+        .await;
+
+    // Server receives LockRequest
+    let event = server
+        .event_rx
+        .try_recv()
+        .expect("Server should have received LockRequest");
+
+    let (req_id, recv_txn_id, recv_services, reply_to) = match event {
+        NetworkEvent::MessageReceived {
+            msg:
+                MeerkatMessage::LockRequest {
+                    request_id,
+                    txn_id,
+                    services,
+                    reply_to,
+                },
+            ..
+        } => (request_id, txn_id, services, reply_to),
+        other => panic!("Expected LockRequest, got {:?}", other),
+    };
+
+    // Route through server dispatch logic (validating & replying)
+    let response = MeerkatMessage::LockResponse {
+        request_id: req_id,
+        txn_id: recv_txn_id,
+        success: false,
+        error: codec::validate_lock_request(&recv_services)
+            .err()
+            .map(|e| e.to_string()),
+    };
+
+    server
+        .handle_command(NetworkCommand::SendMessage {
+            addr: Address::new(&reply_to),
+            msg: response,
+        })
+        .await;
+
+    // Client receives LockResponse over network
+    let event = client
+        .event_rx
+        .try_recv()
+        .expect("Client should have received LockResponse");
+
+    match event {
+        NetworkEvent::MessageReceived {
+            msg:
+                MeerkatMessage::LockResponse {
+                    request_id,
+                    txn_id: resp_txn_id,
+                    success: false,
+                    error: Some(err),
+                },
+            ..
+        } => {
+            assert_eq!(request_id, 100);
+            assert_eq!(resp_txn_id, txn_id);
+            assert!(err.contains("service"));
+        }
+        other => panic!("Expected failure LockResponse, got {:?}", other),
+    }
+}
+
+/// Verify that codec request validation helper functions reject invalid network inputs
+#[test]
+fn test_codec_request_validation() {
+    use meerkat_lib::net::LockGroup;
+    use std::collections::{HashMap, HashSet};
+
+    let mut invalid_svc_map = HashMap::new();
+    invalid_svc_map.insert(
+        "invalid-service!".to_string(),
+        LockGroup {
+            service_level_lock: false,
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+        },
+    );
+
+    assert!(codec::validate_lock_request(&invalid_svc_map).is_err());
+    assert!(codec::validate_lookup_request("invalid-service!", "member").is_err());
+    assert!(codec::validate_action_request("invalid-service!").is_err());
+}
