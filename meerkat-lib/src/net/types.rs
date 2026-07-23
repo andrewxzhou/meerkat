@@ -45,6 +45,13 @@ impl ServiceNetId {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClockEntry {
+      pub service: String,
+      pub member: String,
+      pub counter: u64,
+}
+
 /// Message types in the `Meerkat` protocol
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MeerkatMessage {
@@ -165,7 +172,7 @@ pub enum MeerkatMessage {
         source_service: String,
         member: String,
         value: NetValue,
-        clock: VClock,
+        clock: Vec<ClockEntry>,
     },
 
     /// #39: request the source of a `.mkt` file by path. A (browser) client

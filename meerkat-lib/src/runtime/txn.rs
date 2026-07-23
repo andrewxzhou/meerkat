@@ -187,7 +187,6 @@ impl VarLock {
         }
     }
 }
-
 pub type VClock = HashMap<(Symbol, Symbol), u64>;
 
 /// Composite state for a single variable represented by `VarState`
