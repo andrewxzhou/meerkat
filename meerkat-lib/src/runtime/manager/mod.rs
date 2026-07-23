@@ -642,7 +642,7 @@ impl Manager {
 
     // compute v_target from vector clock semantics 5.3 by taking max over all dependent vector clocks
     // then, determine whether it is glitch-free or not
-    fn compute_v_target(&self, curr_svc : &Service, def: &Symbol) -> (VClock, bool) {
+    fn compute_v_target(&self, curr_svc: &Service, def: &Symbol) -> (VClock, bool) {
         // get all vclocks of dependencies
         let mut vclocks: Vec<&VClock> = Vec::new();
 
@@ -729,8 +729,6 @@ impl Manager {
             .map(|m| m.iter().map(|(k, (v, _clk))| (*k, v.clone())).collect())
             .unwrap_or_default();
 
-        
-
         let curr_svc = match self.services.get(&svc) {
             Some(svc) => svc,
             None => {
@@ -747,7 +745,7 @@ impl Manager {
 
         if gate_ok {
             self.reactive_cache = Some(cache);
-            
+
             let result = eval(
                 &expr,
                 &env,
@@ -954,7 +952,7 @@ impl Manager {
         source_sym: Symbol,
         member_sym: Symbol,
         value: crate::net::ast::NetValue,
-        clock: VClock
+        clock: VClock,
     ) {
         let value = match codec::decode_value(value, &mut self.interner) {
             Ok(v) => v,
@@ -1032,27 +1030,28 @@ impl Manager {
                         source_service,
                         member,
                         value,
-                        clock, 
+                        clock,
                     } => {
                         // #24: validate + intern wire names through codec; skip
                         // the message if any identifier fails validation.
-                        let (listener_def_sym, source_sym, member_sym, vclock) = match codec::decode_update(
-                            &listener_def,
-                            &source_service,
-                            &member,
-                            &mut self.interner,
-                            clock
-                        ) {
-                            Ok(syms) => syms,
-                            Err(_) => continue,
-                        };
+                        let (listener_def_sym, source_sym, member_sym, vclock) =
+                            match codec::decode_update(
+                                &listener_def,
+                                &source_service,
+                                &member,
+                                &mut self.interner,
+                                clock,
+                            ) {
+                                Ok(syms) => syms,
+                                Err(_) => continue,
+                            };
                         self.handle_update(
                             ServiceNetId(listener_service),
                             listener_def_sym,
                             source_sym,
                             member_sym,
                             value,
-                            vclock
+                            vclock,
                         )
                         .await;
                     }
@@ -2541,7 +2540,10 @@ mod tests {
         assert_eq!(tc.manager.lookup(q, tc.foo, None).await.unwrap(), vint(32));
 
         // write x = 2  ->  a = 12, b = 22, q = 34
-        tc.manager.assign(tc.foo, tc.x, vint(2), None).await.unwrap();
+        tc.manager
+            .assign(tc.foo, tc.x, vint(2), None)
+            .await
+            .unwrap();
         assert_eq!(
             tc.manager.lookup(q, tc.foo, None).await.unwrap(),
             vint(34),
@@ -2628,7 +2630,10 @@ mod tests {
         let gen2: VClock = HashMap::from([((tc.foo, tc.x), 2u64)]);
 
         // settle at generation 1: x = 2, a = 12, q = 14
-        tc.manager.assign(tc.foo, tc.x, vint(2), None).await.unwrap();
+        tc.manager
+            .assign(tc.foo, tc.x, vint(2), None)
+            .await
+            .unwrap();
         assert_eq!(tc.manager.lookup(q, tc.foo, None).await.unwrap(), vint(14));
 
         // stage the inconsistency: x jumps to generation 2 with a new value,
@@ -2705,8 +2710,16 @@ mod tests {
     // wrong rather than coincidentally correct.
     async fn setup_remote_diamond(tc: &mut TestContext, a: Symbol, b: Symbol, z: Symbol) -> String {
         let s1_decls = vec![
-            Decl::VarDecl { name: a, ty: None, val: lit_int(0) },
-            Decl::VarDecl { name: b, ty: None, val: lit_int(0) },
+            Decl::VarDecl {
+                name: a,
+                ty: None,
+                val: lit_int(0),
+            },
+            Decl::VarDecl {
+                name: b,
+                ty: None,
+                val: lit_int(0),
+            },
         ];
         tc.manager.create_service(tc.s1, s1_decls).await.unwrap();
 
@@ -2714,8 +2727,14 @@ mod tests {
             name: z,
             ty: None,
             val: mk_add(
-                Expr::MemberAccess { service_name: tc.s1, member_name: a },
-                Expr::MemberAccess { service_name: tc.s1, member_name: b },
+                Expr::MemberAccess {
+                    service_name: tc.s1,
+                    member_name: a,
+                },
+                Expr::MemberAccess {
+                    service_name: tc.s1,
+                    member_name: b,
+                },
             ),
             is_pub: true,
         }];
@@ -2746,12 +2765,29 @@ mod tests {
         deliver_update(&mut tc.manager, &s2_id, z, tc.s1, a, vint(11), clk_a1).await;
         deliver_update(&mut tc.manager, &s2_id, z, tc.s1, b, vint(21), clk_b1).await;
 
-        let z_gen1: VClock =
-            HashMap::from([((tc.s1, tc.w), 1u64), ((tc.s1, a), 1u64), ((tc.s1, b), 1u64)]);
+        let z_gen1: VClock = HashMap::from([
+            ((tc.s1, tc.w), 1u64),
+            ((tc.s1, a), 1u64),
+            ((tc.s1, b), 1u64),
+        ]);
         {
-            let vs = tc.manager.services.get(&tc.s2).unwrap().vars.get(&z).unwrap();
-            assert_eq!(vs.value, vint(32), "z reflects the consistent gen-1 cut (11 + 21)");
-            assert_eq!(vs.vector_clock, z_gen1, "z carries the joined gen-1 frontier");
+            let vs = tc
+                .manager
+                .services
+                .get(&tc.s2)
+                .unwrap()
+                .vars
+                .get(&z)
+                .unwrap();
+            assert_eq!(
+                vs.value,
+                vint(32),
+                "z reflects the consistent gen-1 cut (11 + 21)"
+            );
+            assert_eq!(
+                vs.vector_clock, z_gen1,
+                "z carries the joined gen-1 frontier"
+            );
         }
 
         // generation 2: advance both arms consistently on (s1,w):2. The lone
@@ -2762,15 +2798,28 @@ mod tests {
         deliver_update(&mut tc.manager, &s2_id, z, tc.s1, a, vint(12), clk_a2).await;
         deliver_update(&mut tc.manager, &s2_id, z, tc.s1, b, vint(22), clk_b2).await;
 
-        let z_gen2: VClock =
-            HashMap::from([((tc.s1, tc.w), 2u64), ((tc.s1, a), 2u64), ((tc.s1, b), 2u64)]);
-        let vs = tc.manager.services.get(&tc.s2).unwrap().vars.get(&z).unwrap();
+        let z_gen2: VClock = HashMap::from([
+            ((tc.s1, tc.w), 2u64),
+            ((tc.s1, a), 2u64),
+            ((tc.s1, b), 2u64),
+        ]);
+        let vs = tc
+            .manager
+            .services
+            .get(&tc.s2)
+            .unwrap()
+            .vars
+            .get(&z)
+            .unwrap();
         assert_eq!(
             vs.value,
             vint(34),
             "z reflects the consistent gen-2 cut (12 + 22), never a glitch (33)"
         );
-        assert_eq!(vs.vector_clock, z_gen2, "z carries the joined gen-2 frontier");
+        assert_eq!(
+            vs.vector_clock, z_gen2,
+            "z carries the joined gen-2 frontier"
+        );
     }
 
     // Remote diamond where one arm runs ahead (gate DEFERS).
@@ -2793,10 +2842,20 @@ mod tests {
         deliver_update(&mut tc.manager, &s2_id, z, tc.s1, a, vint(11), clk_a1).await;
         deliver_update(&mut tc.manager, &s2_id, z, tc.s1, b, vint(21), clk_b1).await;
 
-        let z_gen1: VClock =
-            HashMap::from([((tc.s1, tc.w), 1u64), ((tc.s1, a), 1u64), ((tc.s1, b), 1u64)]);
+        let z_gen1: VClock = HashMap::from([
+            ((tc.s1, tc.w), 1u64),
+            ((tc.s1, a), 1u64),
+            ((tc.s1, b), 1u64),
+        ]);
         assert_eq!(
-            tc.manager.services.get(&tc.s2).unwrap().vars.get(&z).unwrap().value,
+            tc.manager
+                .services
+                .get(&tc.s2)
+                .unwrap()
+                .vars
+                .get(&z)
+                .unwrap()
+                .value,
             vint(32),
             "baseline: consistent gen-1 cut"
         );
@@ -2808,19 +2867,47 @@ mod tests {
         // gate must DEFER: b (gen-1) lags a (gen-2) on dimension (s1,w). z keeps
         // its consistent value and clock rather than glitching to 12 + 21 = 33.
         {
-            let vs = tc.manager.services.get(&tc.s2).unwrap().vars.get(&z).unwrap();
-            assert_eq!(vs.value, vint(32), "z must not glitch to 33 while b is stale");
-            assert_eq!(vs.vector_clock, z_gen1, "z's clock is unchanged while deferred");
+            let vs = tc
+                .manager
+                .services
+                .get(&tc.s2)
+                .unwrap()
+                .vars
+                .get(&z)
+                .unwrap();
+            assert_eq!(
+                vs.value,
+                vint(32),
+                "z must not glitch to 33 while b is stale"
+            );
+            assert_eq!(
+                vs.vector_clock, z_gen1,
+                "z's clock is unchanged while deferred"
+            );
         }
 
         // b catches up to generation 2; the gate now passes and z recomputes.
         let clk_b2: VClock = HashMap::from([((tc.s1, tc.w), 2u64), ((tc.s1, b), 2u64)]);
         deliver_update(&mut tc.manager, &s2_id, z, tc.s1, b, vint(22), clk_b2).await;
 
-        let z_gen2: VClock =
-            HashMap::from([((tc.s1, tc.w), 2u64), ((tc.s1, a), 2u64), ((tc.s1, b), 2u64)]);
-        let vs = tc.manager.services.get(&tc.s2).unwrap().vars.get(&z).unwrap();
-        assert_eq!(vs.value, vint(34), "z = a + b = 12 + 22 once the frontier is consistent");
+        let z_gen2: VClock = HashMap::from([
+            ((tc.s1, tc.w), 2u64),
+            ((tc.s1, a), 2u64),
+            ((tc.s1, b), 2u64),
+        ]);
+        let vs = tc
+            .manager
+            .services
+            .get(&tc.s2)
+            .unwrap()
+            .vars
+            .get(&z)
+            .unwrap();
+        assert_eq!(
+            vs.value,
+            vint(34),
+            "z = a + b = 12 + 22 once the frontier is consistent"
+        );
         assert_eq!(vs.vector_clock, z_gen2, "z joins the generation-2 frontier");
     }
 
@@ -2841,7 +2928,7 @@ mod tests {
         source: Symbol,       // in src's symbol space
         member: Symbol,       // in src's symbol space
         value: Value,
-        clock: VClock,        // in src's symbol space
+        clock: VClock, // in src's symbol space
     ) {
         // send side (mirrors emit_update)
         let msg = MeerkatMessage::Update {
@@ -2858,18 +2945,25 @@ mod tests {
         let msg: MeerkatMessage = serde_json::from_slice(&bytes).unwrap();
 
         // recv side (mirrors the dispatcher's Update arm)
-        let (listener_service, listener_def, source_service, member, net_val, wire_clock) = match msg
-        {
-            MeerkatMessage::Update {
-                listener_service,
-                listener_def,
-                source_service,
-                member,
-                value,
-                clock,
-            } => (listener_service, listener_def, source_service, member, value, clock),
-            other => panic!("expected Update, got {:?}", other),
-        };
+        let (listener_service, listener_def, source_service, member, net_val, wire_clock) =
+            match msg {
+                MeerkatMessage::Update {
+                    listener_service,
+                    listener_def,
+                    source_service,
+                    member,
+                    value,
+                    clock,
+                } => (
+                    listener_service,
+                    listener_def,
+                    source_service,
+                    member,
+                    value,
+                    clock,
+                ),
+                other => panic!("expected Update, got {:?}", other),
+            };
         let (listener_def_sym, source_sym, member_sym, vclock) = codec::decode_update(
             &listener_def,
             &source_service,
@@ -2934,8 +3028,16 @@ mod tests {
             .create_service(
                 b_s1,
                 vec![
-                    Decl::VarDecl { name: b_a, ty: None, val: lit_int(0) },
-                    Decl::VarDecl { name: b_b, ty: None, val: lit_int(0) },
+                    Decl::VarDecl {
+                        name: b_a,
+                        ty: None,
+                        val: lit_int(0),
+                    },
+                    Decl::VarDecl {
+                        name: b_b,
+                        ty: None,
+                        val: lit_int(0),
+                    },
                 ],
             )
             .await
@@ -2947,8 +3049,14 @@ mod tests {
                     name: b_z,
                     ty: None,
                     val: mk_add(
-                        Expr::MemberAccess { service_name: b_s1, member_name: b_a },
-                        Expr::MemberAccess { service_name: b_s1, member_name: b_b },
+                        Expr::MemberAccess {
+                            service_name: b_s1,
+                            member_name: b_a,
+                        },
+                        Expr::MemberAccess {
+                            service_name: b_s1,
+                            member_name: b_b,
+                        },
                     ),
                     is_pub: true,
                 }],
@@ -2985,10 +3093,17 @@ mod tests {
         // z recomputed to the consistent sum, and its clock is the join expressed
         // entirely in B's symbol space — proving the dimensions were re-interned,
         // not carried as raw ids.
-        let expected: VClock =
-            HashMap::from([((b_s1, b_w), 1u64), ((b_s1, b_a), 1u64), ((b_s1, b_b), 1u64)]);
+        let expected: VClock = HashMap::from([
+            ((b_s1, b_w), 1u64),
+            ((b_s1, b_a), 1u64),
+            ((b_s1, b_b), 1u64),
+        ]);
         let vs = node_b.services.get(&b_s2).unwrap().vars.get(&b_z).unwrap();
-        assert_eq!(vs.value, vint(32), "z = s1.a + s1.b = 11 + 21 across the wire");
+        assert_eq!(
+            vs.value,
+            vint(32),
+            "z = s1.a + s1.b = 11 + 21 across the wire"
+        );
         assert_eq!(
             vs.vector_clock, expected,
             "z's clock arrived in B's symbol space with the right dimensions"
@@ -3046,7 +3161,10 @@ mod tests {
         tc.manager.create_service(tc.foo, decls).await.unwrap();
 
         // advance y to generation 1 first
-        tc.manager.assign(tc.foo, tc.y, vint(9), None).await.unwrap();
+        tc.manager
+            .assign(tc.foo, tc.y, vint(9), None)
+            .await
+            .unwrap();
         // now write x having READ y
         tc.manager.simultaneous_bump(
             &HashSet::from([(tc.foo, tc.y)]),
@@ -3089,7 +3207,10 @@ mod tests {
 
         let key = (tc.foo, tc.x);
         for expected in 1..=3u64 {
-            tc.manager.assign(tc.foo, tc.x, vint(7), None).await.unwrap();
+            tc.manager
+                .assign(tc.foo, tc.x, vint(7), None)
+                .await
+                .unwrap();
             let c = tc
                 .manager
                 .services

@@ -9,6 +9,7 @@ use crate::net::ast::{
     NetUnOp, NetValue,
 };
 use crate::net::types::MeerkatMessage;
+use crate::net::ClockEntry;
 use crate::runtime::ast::{ActionStmt, BinOp, Expr, Field, TableType, UnOp, Value};
 use crate::runtime::interner::{Interner, Symbol};
 use crate::runtime::limits::{
@@ -16,7 +17,6 @@ use crate::runtime::limits::{
 };
 use crate::runtime::tt::{Param, ServiceType, TupleType, Type};
 use crate::runtime::txn::VClock;
-use crate::net::ClockEntry;
 
 fn validate_identifier(s: &str) -> Result<()> {
     if s.len() > MAX_IDENTIFIER_LENGTH {
@@ -173,7 +173,13 @@ pub fn clock_entry_to_vclock(clock: Vec<ClockEntry>, interner: &mut Interner) ->
     for entry in clock {
         validate_identifier(&entry.service)?;
         validate_identifier(&entry.member)?;
-        symbol_vec_clock.push(((interner.insert(&entry.service), interner.insert(&entry.member)), entry.counter));
+        symbol_vec_clock.push((
+            (
+                interner.insert(&entry.service),
+                interner.insert(&entry.member),
+            ),
+            entry.counter,
+        ));
     }
     Ok(symbol_vec_clock.into_iter().collect())
 }
@@ -184,13 +190,13 @@ pub fn clock_entry_to_vclock(clock: Vec<ClockEntry>, interner: &mut Interner) ->
 /// network-sourced names happens here after validation.
 ///
 /// Returns `(listener_def, source_service, member, vector clock)`. The first three arguments
-/// are returned as interned symbols, while the last is returned as an interned VClock. 
+/// are returned as interned symbols, while the last is returned as an interned VClock.
 pub fn decode_update(
     listener_def: &str,
     source_service: &str,
     member: &str,
     interner: &mut Interner,
-    clock: Vec<ClockEntry>
+    clock: Vec<ClockEntry>,
 ) -> Result<(Symbol, Symbol, Symbol, VClock)> {
     validate_identifier(listener_def)?;
     validate_identifier(source_service)?;
@@ -199,7 +205,7 @@ pub fn decode_update(
         interner.insert(listener_def),
         interner.insert(source_service),
         interner.insert(member),
-        clock_entry_to_vclock(clock, interner)?
+        clock_entry_to_vclock(clock, interner)?,
     ))
 }
 
@@ -519,23 +525,24 @@ pub fn encode_value(val: &Value, interner: &Interner) -> Result<NetValue> {
 }
 
 /// Encode a vector clock into a network representation
-/// 
+///
 /// Args:
 ///     clock (`&VClock`): The vector clock to encode
 ///     interner (`&Interner`): The `Interner` for symbol lookup
-/// 
+///
 /// Returns:
-///     Vec<ClockEntry>: The resulting encoded vector clock, which is a vector of 
+///     Vec<ClockEntry>: The resulting encoded vector clock, which is a vector of
 ///     ((String, String), u64) pairs. Note that this is the direct mechanical
 ///     translation of the key-value mappings in a vector clock.
 pub fn encode_clock(clock: &VClock, interner: &Interner) -> Vec<ClockEntry> {
     let clock_vec = clock.into_iter();
-    clock_vec.map(
-        |((svc_sym, var_sym), i)| 
-        ClockEntry { 
+    clock_vec
+        .map(|((svc_sym, var_sym), i)| ClockEntry {
             service: interner.get(*svc_sym).to_string(),
-            member:  interner.get(*var_sym).to_string(),
-            counter: *i}).collect()
+            member: interner.get(*var_sym).to_string(),
+            counter: *i,
+        })
+        .collect()
 }
 
 /// Decode a network `NetValue` representation into a runtime `Value`

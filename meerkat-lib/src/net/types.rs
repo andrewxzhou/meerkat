@@ -47,9 +47,9 @@ impl ServiceNetId {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClockEntry {
-      pub service: String,
-      pub member: String,
-      pub counter: u64,
+    pub service: String,
+    pub member: String,
+    pub counter: u64,
 }
 
 /// Message types in the `Meerkat` protocol
