@@ -22,7 +22,7 @@ use crate::runtime::limits::MAX_IDENTIFIER_LENGTH;
 /// The inner field `id` is private to the module to prevent arbitrary
 /// construction of `Symbol` outside of the `interner` module, enforcing
 /// that symbols can only be created by `Interner` or sentinel constructors
-#[derive(Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Symbol {
     id: u32,
 }

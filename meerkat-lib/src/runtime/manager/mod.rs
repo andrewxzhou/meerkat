@@ -710,8 +710,9 @@ impl Manager {
         }
         // gate: every input clock is >= v_target
         let gate_ok = vclocks.iter().all(|clk| {
-            clk.iter()
-                .all(|(dim, &c)| c >= v_target.get(dim).copied().unwrap_or(0))
+            v_target
+                .iter()
+                .all(|(dim, &t)| clk.get(dim).copied().unwrap_or(0) >= t)
         });
         (v_target, gate_ok)
     }

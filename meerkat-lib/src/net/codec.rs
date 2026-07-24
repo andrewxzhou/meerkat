@@ -227,19 +227,22 @@ pub fn decode_request_updates(
 }
 /// Decode a network ClockEntry to a runtime VClock
 pub fn clock_entry_to_vclock(clock: Vec<ClockEntry>, interner: &mut Interner) -> Result<VClock> {
-    let mut symbol_vec_clock = Vec::new();
+    let mut vclock: VClock = HashMap::new();
     for entry in clock {
         validate_identifier(&entry.service)?;
         validate_identifier(&entry.member)?;
-        symbol_vec_clock.push((
-            (
-                interner.insert(&entry.service),
-                interner.insert(&entry.member),
-            ),
-            entry.counter,
-        ));
+        let key = (
+            interner.insert(&entry.service),
+            interner.insert(&entry.member),
+        );
+        if vclock.insert(key, entry.counter).is_some() {
+            return Err(Error::LimitExceeded(format!(
+                "duplicate clock dimension: ({}, {})",
+                entry.service, entry.member
+            )));
+        }
     }
-    Ok(symbol_vec_clock.into_iter().collect())
+    Ok(vclock)
 }
 
 /// #24: validate and intern the identifier fields of an `Update` message
@@ -590,7 +593,7 @@ pub fn encode_value(val: &Value, interner: &Interner) -> Result<NetValue> {
 ///
 /// Returns:
 ///     Vec<ClockEntry>: The resulting encoded vector clock, which is a vector of
-///     ((String, String), u64) pairs. Note that this is the direct mechanical
+///     ClockEntry { service, member, counter } structs. Note that this is the direct mechanical
 ///     translation of the key-value mappings in a vector clock.
 pub fn encode_clock(clock: &VClock, interner: &Interner) -> Vec<ClockEntry> {
     let clock_vec = clock.iter();
